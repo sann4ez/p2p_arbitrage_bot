@@ -1,15 +1,29 @@
-from aiogram import Router, types
+from aiogram import Router
 from aiogram.filters import CommandStart
+from aiogram.fsm.context import FSMContext
+from aiogram.types import Message
 
-from keyboards.menu import main_menu_kb
+from db.base import AsyncSessionLocal
+from keyboards.menu import exchanges_kb
+from services.user_service import UserService
 
 router = Router()
 
+
 @router.message(CommandStart())
-async def start_bot(message: types.Message):
+async def start_handler(message: Message, state: FSMContext):
+    await state.clear()
+
+    async with AsyncSessionLocal() as session:
+
+        service = UserService(session)
+
+        await service.register_user(
+            telegram_id=message.from_user.id,
+            username=message.from_user.username
+        )
+
     await message.answer(
-        f"Привіт, {message.from_user.full_name}!"
-        + "\nЦе бот по P2P Арбітражу"
-        + "\nВиберіть необхідний пункт меню:",
-        reply_markup=main_menu_kb()
+        "Бот активовано ✅\n\nОберіть біржу:",
+        reply_markup=exchanges_kb(),
     )
