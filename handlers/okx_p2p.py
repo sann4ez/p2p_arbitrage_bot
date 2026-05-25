@@ -1,13 +1,24 @@
-from html import escape
+import logging
 
 from aiogram import F, Router, types
 from aiogram.filters import StateFilter
 
+from db.base import AsyncSessionLocal
 from fsm.states import P2PExchange
 from keyboards.menu import BTN_UAH_TO_USDT, BTN_USDT_TO_UAH
 from services.okx_client import fetch_okx_p2p
+from services.p2p_filters import (
+    filter_orders,
+    filters_summary,
+    get_fetch_order_count,
+    get_filters,
+)
+from services.p2p_description_filter import filter_orders_by_description
+from services.p2p_order_formatter import build_okx_order_blocks, count_okx_descriptions
+from services.telegram_messages import send_html_blocks
 
 router = Router()
+logger = logging.getLogger(__name__)
 
 
 @router.message(StateFilter(P2PExchange.okx), F.text == BTN_UAH_TO_USDT)
@@ -34,79 +45,79 @@ async def send_okx_ads(
     side: str,
     title: str,
 ):
+    async with AsyncSessionLocal() as session:
+        settings = await get_filters(session, message.from_user.id)
+
+    fetch_rows = get_fetch_order_count(settings)
+    logger.info(
+        "P2P OKX flow start: telegram_id=%s side=%s fetch_rows=%s display_count=%s desc_mode=%s allow_split=%s allow_third_party=%s",
+        message.from_user.id,
+        side,
+        fetch_rows,
+        settings.display_order_count,
+        settings.description_check_mode,
+        settings.allow_split_payments,
+        settings.allow_third_party_payments,
+    )
+
     ads = await fetch_okx_p2p(
         side=side,
         asset="USDT",
         fiat="UAH",
-        rows=5,
+        rows=fetch_rows,
     )
+    logger.info("P2P OKX fetched: side=%s rows=%s", side, len(ads))
 
     if not ads:
-        await message.answer("Немає даних з OKX")
+        logger.warning("P2P OKX stopped: reason=no_orders side=%s", side)
+        await message.answer("OKX зараз не повернув ордери. Спробуйте ще раз трохи пізніше.")
         return
 
-    text = f"<b>{title}</b>\n\n"
+    filtered_ads = filter_orders(
+        ads,
+        "okx",
+        settings,
+        apply_description_filters=False,
+    )
+    logger.info(
+        "P2P OKX base filters result: input=%s output=%s blocked=%s",
+        len(ads),
+        len(filtered_ads),
+        len(ads) - len(filtered_ads),
+    )
 
-    for ad in ads:
-        price = ad.get("price")
-        min_amt = ad.get("quoteMinAmountPerOrder")
-        max_amt = ad.get("quoteMaxAmountPerOrder")
-        merchant = ad.get("nickName", "Невідомий мерчант")
-        available = ad.get("availableAmount")
-        payment_methods = ", ".join(ad.get("paymentMethods", [])[:3])
-        orders_count = ad.get("completedOrderQuantity")
-        rating = format_okx_rating(ad)
-        completion_rate = format_percent(ad.get("completedRate"))
-        trade_minutes = ad.get("paymentTimeoutMinutes")
+    if not filtered_ads:
+        logger.info("P2P OKX stopped: reason=all_blocked_by_base_filters")
+        await message.answer(
+            f"OKX повернув {len(ads)} ордерів, але всі вони відсіялись фільтрами.\n\n"
+            f"{filters_summary(settings)}"
+        )
+        return
 
-        lines = [
-            f"👤 {escape(str(merchant))}",
-            f"💰 Ціна: <b>{price} UAH</b>",
-            f"📦 Ліміт: {min_amt} – {max_amt}",
-        ]
+    logger.info(
+        "P2P OKX descriptions before description filters: candidates=%s descriptions=%s",
+        len(filtered_ads),
+        count_okx_descriptions(filtered_ads),
+    )
+    filtered_ads = await filter_orders_by_description(filtered_ads, "okx", settings)
+    logger.info("P2P OKX description filters result: output=%s", len(filtered_ads))
 
-        if payment_methods:
-            lines.append(f"🏦 Оплата: {escape(payment_methods)}")
+    if not filtered_ads:
+        logger.info("P2P OKX stopped: reason=all_blocked_by_description_filters")
+        await message.answer(
+            f"OKX повернув {len(ads)} ордерів, але всі вони відсіялись фільтрами.\n\n"
+            f"{filters_summary(settings)}"
+        )
+        return
 
-        if available:
-            lines.append(f"💵 Доступно: {available} USDT")
+    ads = filtered_ads[: settings.display_order_count]
+    logger.info(
+        "P2P OKX output selected: requested=%s selected=%s descriptions=%s",
+        settings.display_order_count,
+        len(ads),
+        count_okx_descriptions(ads),
+    )
+    blocks = build_okx_order_blocks(ads, side)
 
-        if orders_count is not None:
-            lines.append(f"📊 Угоди: {orders_count}")
-
-        if rating:
-            lines.append(f"⭐ Оцінка: {rating}")
-
-        if completion_rate and completion_rate != rating:
-            lines.append(f"✅ Виконання: {completion_rate}")
-
-        if trade_minutes:
-            lines.append(f"⏱ Час угоди: {trade_minutes} хв")
-
-        text += "\n".join(lines) + "\n\n"
-
-    await message.answer(text)
-
-
-def format_okx_rating(ad: dict) -> str | None:
-    positive_rating = format_percent(ad.get("posReviewPercentage"))
-
-    if positive_rating:
-        return positive_rating
-
-    return format_percent(ad.get("completedRate"))
-
-
-def format_percent(value) -> str | None:
-    if value in (None, "", -1, "-1"):
-        return None
-
-    try:
-        number = float(value)
-    except (TypeError, ValueError):
-        return str(value)
-
-    if number <= 1:
-        number *= 100
-
-    return f"{number:.2f}".rstrip("0").rstrip(".") + "%"
+    logger.info("P2P OKX sending messages: blocks=%s", len(blocks))
+    await send_html_blocks(message, title=title, blocks=blocks)

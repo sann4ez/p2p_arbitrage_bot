@@ -10,8 +10,6 @@ from config import Config
 class Base(DeclarativeBase):
     pass
 
-print(Config.DB_URL)
-
 engine = create_async_engine(
     Config.DB_URL,
     echo=False,        # True — для дебагу SQL

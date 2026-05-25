@@ -1,7 +1,11 @@
 import asyncio
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from db.base import Base, engine
-from db.models.user import User
+from db import models
 
 
 async def create_tables():

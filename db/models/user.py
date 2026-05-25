@@ -9,7 +9,7 @@ class User(Base):
     __tablename__ = "users"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    telegram_id: Mapped[int] = mapped_column(BigInteger, unique=True)
+    telegram_id: Mapped[int] = mapped_column(BigInteger, unique=True, index=True)
     username: Mapped[str | None] = mapped_column(String, nullable=True)
 
     is_notifications_enabled: Mapped[bool] = mapped_column(
@@ -18,4 +18,7 @@ class User(Base):
     )
 
     created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)
-    updated_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow,
+    )
