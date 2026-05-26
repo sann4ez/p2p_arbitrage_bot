@@ -65,6 +65,11 @@ class Config:
     P2P_ORDERS_PER_PAGE = int(os.getenv("P2P_ORDERS_PER_PAGE", "3"))
     P2P_PAGINATION_TTL_SECONDS = float(os.getenv("P2P_PAGINATION_TTL_SECONDS", "600"))
     DATABASE_URL = os.getenv("DATABASE_URL", "")
+    DB_AUTO_CREATE_TABLES = parse_bool(os.getenv("DB_AUTO_CREATE_TABLES"), True)
+    DB_AUTO_SEED_REFERENCE_DATA = parse_bool(
+        os.getenv("DB_AUTO_SEED_REFERENCE_DATA"),
+        True,
+    )
     SUPER_ADMIN_TELEGRAM_IDS = parse_telegram_ids(os.getenv("SUPER_ADMIN_TELEGRAM_IDS"))
     SPREAD_THRESHOLD = 1.5  # мінімальний спред у %
     POLL_INTERVAL = 15      # секунд між опитуванням бірж
