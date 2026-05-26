@@ -113,3 +113,16 @@ class RbacRepository:
         result = await self.session.execute(stmt)
 
         return list(result.scalars().all())
+
+    async def get_user_permission_codes(self, user_id: int) -> list[str]:
+        stmt = (
+            select(Permission.code)
+            .join(RolePermission, RolePermission.permission_id == Permission.id)
+            .join(UserRole, UserRole.role_id == RolePermission.role_id)
+            .where(UserRole.user_id == user_id)
+            .distinct()
+            .order_by(Permission.code)
+        )
+        result = await self.session.execute(stmt)
+
+        return list(result.scalars().all())

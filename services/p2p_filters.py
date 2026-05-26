@@ -10,6 +10,7 @@ from db.dto import (
     DESCRIPTION_CHECK_MODE_OPTIONS,
     DESCRIPTION_CHECK_GPT,
     DESCRIPTION_CHECK_REGEX,
+    DESCRIPTION_CHECK_REGEX_GPT,
     DISPLAY_ORDER_COUNT_OPTIONS,
     MIN_PERCENT_OPTIONS,
     MIN_TRADES_OPTIONS,
@@ -22,6 +23,7 @@ from db.dto import (
 )
 from db.models import UserSettings
 from repositories.user_repository import UserRepository
+from services.okx_order_payload import get_okx_order_description_values
 
 MAX_FETCH_ORDER_COUNT = 200
 
@@ -32,6 +34,19 @@ FOP_PAYMENT_KEYWORDS = (
     "entrepreneur",
     "business",
     "рахунок",
+)
+
+FOP_ONLY_PAYMENT_PATTERNS = (
+    re.compile(r"\b(?:тільки|лише|только)\b.{0,40}\b(?:фоп|fop|iban)\b", re.IGNORECASE),
+    re.compile(r"\b(?:фоп|fop|iban)\b.{0,40}\b(?:тільки|лише|только)\b", re.IGNORECASE),
+    re.compile(r"\bоплат\w*\b.{0,40}\b(?:фоп|fop|iban)\b", re.IGNORECASE),
+    re.compile(r"\b(?:на|на\s+банківський)\s+рахунок\b", re.IGNORECASE),
+)
+
+PERSON_PAYMENT_DENY_PATTERNS = (
+    re.compile(r"\b(?:на|на\s+банківські)?\s*(?:карти|карты|картки|карточки)\b.{0,60}\b(?:не|нет|немає|нема)\b", re.IGNORECASE),
+    re.compile(r"\b(?:не|нет|немає|нема)\b.{0,60}\b(?:на|на\s+банківські)?\s*(?:карти|карты|картки|карточки)\b", re.IGNORECASE),
+    re.compile(r"\b(?:карти|карты|картки|карточки)\b.{0,60}\b(?:не\s+виплачу|не\s+выплачи|не\s+відправ|не\s+отправ)\w*", re.IGNORECASE),
 )
 
 PERSON_PAYMENT_KEYWORDS = (
@@ -733,7 +748,7 @@ def get_binance_order_metrics(order: dict) -> dict:
         ),
         "rating": parse_percent(advertiser.get("positiveRate")),
         "completion": parse_percent(advertiser.get("monthFinishRate")),
-        "payment_categories": categorize_payment_methods(payment_names),
+        "payment_categories": categorize_payment_methods(payment_names, description),
         "third_party_payments": has_third_party_payment_terms(description),
         "split_payments": has_split_payment_terms(description),
     }
@@ -741,16 +756,7 @@ def get_binance_order_metrics(order: dict) -> dict:
 
 def get_okx_order_metrics(order: dict) -> dict:
     payment_names = [str(method) for method in order.get("paymentMethods", [])]
-    description = normalize_order_description(
-        order.get("_order_description"),
-        order.get("remarks"),
-        order.get("remark"),
-        order.get("description"),
-        order.get("desc"),
-        order.get("autoReplyMsg"),
-        order.get("tradingTerms"),
-        order.get("terms"),
-    )
+    description = normalize_order_description(*get_okx_order_description_values(order))
 
     return {
         "minutes": parse_int(order.get("paymentTimeoutMinutes")),
@@ -758,7 +764,7 @@ def get_okx_order_metrics(order: dict) -> dict:
         "rating": parse_percent(order.get("posReviewPercentage"))
         or parse_percent(order.get("completedRate")),
         "completion": parse_percent(order.get("completedRate")),
-        "payment_categories": categorize_payment_methods(payment_names),
+        "payment_categories": categorize_payment_methods(payment_names, description),
         "third_party_payments": has_third_party_payment_terms(description),
         "split_payments": has_split_payment_terms(description),
     }
@@ -829,7 +835,13 @@ def value_gte(value, threshold) -> bool:
     return value is not None and value >= threshold
 
 
-def categorize_payment_methods(payment_names: list[str]) -> set[str]:
+def categorize_payment_methods(
+    payment_names: list[str],
+    description: str | None = None,
+) -> set[str]:
+    if has_fop_only_payment_terms(description):
+        return {PAYMENT_CATEGORY_FOP}
+
     categories = set()
 
     for name in payment_names:
@@ -841,6 +853,9 @@ def categorize_payment_methods(payment_names: list[str]) -> set[str]:
             categories.add(PAYMENT_CATEGORY_PERSON)
         else:
             categories.add(PAYMENT_CATEGORY_OTHER)
+
+    if has_fop_payment_terms(description):
+        categories.add(PAYMENT_CATEGORY_FOP)
 
     return categories or {PAYMENT_CATEGORY_OTHER}
 
@@ -872,6 +887,29 @@ def normalize_search_text(value: str | None) -> str:
         return ""
 
     return " ".join(str(value).lower().replace("ё", "е").split())
+
+
+def has_fop_payment_terms(description: str | None) -> bool:
+    text = normalize_search_text(description)
+
+    if not text:
+        return False
+
+    return contains_any(text, FOP_PAYMENT_KEYWORDS)
+
+
+def has_fop_only_payment_terms(description: str | None) -> bool:
+    text = normalize_search_text(description)
+
+    if not text:
+        return False
+
+    if not has_fop_payment_terms(text):
+        return False
+
+    return any(pattern.search(text) for pattern in FOP_ONLY_PAYMENT_PATTERNS) or any(
+        pattern.search(text) for pattern in PERSON_PAYMENT_DENY_PATTERNS
+    )
 
 
 def has_third_party_payment_terms(description: str | None) -> bool:
@@ -972,6 +1010,7 @@ def format_allowed(value: bool) -> str:
 def format_description_check_mode(value: str) -> str:
     labels = {
         DESCRIPTION_CHECK_REGEX: "Regex",
+        DESCRIPTION_CHECK_REGEX_GPT: "Regex + GPT",
         DESCRIPTION_CHECK_GPT: "GPT",
     }
 

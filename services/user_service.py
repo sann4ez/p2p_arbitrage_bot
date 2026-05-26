@@ -50,6 +50,14 @@ class UserService:
 
         return await self.rbac_repo.get_user_role_codes(user.id)
 
+    async def get_user_permission_codes(self, telegram_id: int) -> list[str]:
+        user = await self.get_user_by_telegram_id(telegram_id)
+
+        if not user:
+            return []
+
+        return await self.rbac_repo.get_user_permission_codes(user.id)
+
     def get_default_role_code(self, telegram_id: int) -> str:
         if telegram_id in Config.SUPER_ADMIN_TELEGRAM_IDS:
             return ROLE_SUPER_ADMIN

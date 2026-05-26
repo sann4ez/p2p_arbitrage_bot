@@ -4,7 +4,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import Message
 
 from db.base import AsyncSessionLocal
-from keyboards.menu import root_menu_kb
+from services.menu_service import root_menu_for_user
 from services.user_service import UserService
 
 router = Router()
@@ -25,5 +25,5 @@ async def start_handler(message: Message, state: FSMContext):
 
     await message.answer(
         "Бот активовано ✅\n\nОберіть розділ:",
-        reply_markup=root_menu_kb(),
+        reply_markup=await root_menu_for_user(message.from_user.id),
     )

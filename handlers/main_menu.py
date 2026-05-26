@@ -1,3 +1,6 @@
+import json
+from html import escape
+
 from aiogram import F, Router, types
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import StateFilter
@@ -43,8 +46,8 @@ from keyboards.menu import (
     exchanges_kb,
     p2p_filter_values_inline_kb,
     p2p_filters_inline_kb,
-    root_menu_kb,
 )
+from services.menu_service import root_menu_for_user
 from services.p2p_filters import (
     PAYMENT_CATEGORY_FOP,
     PAYMENT_CATEGORY_OTHER,
@@ -107,7 +110,7 @@ FILTER_SCREEN_TEXTS = {
     ),
     FILTER_SCREEN_DESCRIPTION_CHECK: (
         "Перевірка опису",
-        "Regex швидший, GPT краще розуміє нечіткі формулювання в описах.",
+        "Regex швидший, GPT краще розуміє нечіткі формулювання, а Regex + GPT спочатку прибирає очевидне regex-ом і потім перевіряє решту через GPT.",
     ),
     FILTER_SCREEN_DISPLAY_COUNT: (
         "Кількість у видачі",
@@ -117,6 +120,28 @@ FILTER_SCREEN_TEXTS = {
         "Кандидати для перевірки",
         "Оберіть, скільки перших ордерів перевіряти описами перед фінальною видачею.",
     ),
+}
+
+TELEGRAM_USER_MAIN_FIELDS = (
+    ("id", "Telegram ID"),
+    ("first_name", "Ім'я"),
+    ("last_name", "Прізвище"),
+    ("username", "Username"),
+    ("language_code", "Мова"),
+    ("is_premium", "Telegram Premium"),
+)
+
+TELEGRAM_USER_CAPABILITY_FIELDS = (
+    ("is_bot", "Бот"),
+    ("can_join_groups", "Може вступати в групи"),
+    ("can_read_all_group_messages", "Читає всі повідомлення груп"),
+    ("supports_inline_queries", "Підтримує inline-запити"),
+    ("added_to_attachment_menu", "Доданий в attachment menu"),
+)
+
+TELEGRAM_USER_KNOWN_FIELDS = {
+    key
+    for key, _ in TELEGRAM_USER_MAIN_FIELDS + TELEGRAM_USER_CAPABILITY_FIELDS
 }
 
 
@@ -156,7 +181,7 @@ async def back_to_main_menu(message: types.Message, state: FSMContext):
 
     await message.answer(
         "Головне меню:",
-        reply_markup=root_menu_kb(),
+        reply_markup=await root_menu_for_user(message.from_user.id),
     )
 
 
@@ -174,14 +199,16 @@ async def my_info(message: types.Message):
     username = f"@{user.username}" if user.username else "не вказано"
     notifications = "увімкнені" if user.is_notifications_enabled else "вимкнені"
     roles_text = ", ".join(roles) if roles else "немає"
+    telegram_user_text = format_telegram_user_data(message.from_user)
 
     await message.answer(
         "<b>Інфо про себе</b>\n\n"
         f"Telegram ID: <code>{user.telegram_id}</code>\n"
-        f"Username: {username}\n"
-        f"Ролі: {roles_text}\n"
+        f"Username: {escape(username)}\n"
+        f"Ролі: {escape(roles_text)}\n"
         f"Сповіщення: {notifications}\n"
-        f"Дата реєстрації: {user.created_at:%Y-%m-%d %H:%M}",
+        f"Дата реєстрації: {user.created_at:%Y-%m-%d %H:%M}\n\n"
+        f"<b>Дані Telegram</b>\n{telegram_user_text}",
         reply_markup=cabinet_kb(),
     )
 
@@ -484,3 +511,68 @@ def parse_optional_int(value: str) -> int | None:
 
 def parse_optional_float(value: str) -> float | None:
     return None if value == "none" else float(value)
+
+
+def format_telegram_user_data(telegram_user: types.User) -> str:
+    data = telegram_user.model_dump(exclude_none=True)
+
+    if not data:
+        return "Telegram не передав додаткових даних."
+
+    sections = [
+        format_telegram_section("Основне", data, TELEGRAM_USER_MAIN_FIELDS),
+        format_telegram_section("Можливості", data, TELEGRAM_USER_CAPABILITY_FIELDS),
+        format_telegram_extra_fields(data),
+    ]
+
+    return "\n\n".join(section for section in sections if section)
+
+
+def format_telegram_section(
+    title: str,
+    data: dict,
+    fields: tuple[tuple[str, str], ...],
+) -> str:
+    rows = [
+        f"• {label}: {format_telegram_value(key, data[key])}"
+        for key, label in fields
+        if key in data
+    ]
+
+    if not rows:
+        return ""
+
+    return f"<b>{title}</b>\n" + "\n".join(rows)
+
+
+def format_telegram_extra_fields(data: dict) -> str:
+    rows = [
+        f"• {escape(format_telegram_field_name(key))}: {format_telegram_value(key, value)}"
+        for key, value in data.items()
+        if key not in TELEGRAM_USER_KNOWN_FIELDS
+    ]
+
+    if not rows:
+        return ""
+
+    return "<b>Інші поля</b>\n" + "\n".join(rows)
+
+
+def format_telegram_value(key: str, value) -> str:
+    if isinstance(value, bool):
+        return "✅ так" if value else "❌ ні"
+
+    if isinstance(value, (dict, list)):
+        return f"<code>{escape(json.dumps(value, ensure_ascii=False))}</code>"
+
+    if key == "id":
+        return f"<code>{escape(str(value))}</code>"
+
+    if key == "username":
+        return f"@{escape(str(value))}"
+
+    return escape(str(value))
+
+
+def format_telegram_field_name(key: str) -> str:
+    return str(key).replace("_", " ").capitalize()

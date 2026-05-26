@@ -14,7 +14,7 @@ from services.p2p_filters import (
     get_filters,
 )
 from services.p2p_description_filter import (
-    filter_orders_by_description,
+    filter_orders_by_description_until,
     needs_description_filtering,
 )
 from services.p2p_order_formatter import (
@@ -22,7 +22,13 @@ from services.p2p_order_formatter import (
     build_binance_order_blocks,
     count_binance_descriptions,
 )
-from services.telegram_messages import send_html_blocks
+from services.p2p_request_guard import (
+    check_p2p_user_rate_limit,
+    format_rate_limit_message,
+    get_cached_p2p_details,
+    get_cached_p2p_orders,
+)
+from services.telegram_messages import send_paginated_html_blocks
 
 router = Router()
 logger = logging.getLogger(__name__)
@@ -52,26 +58,42 @@ async def send_binance_ads(
     trade_type: str,
     title: str,
 ):
+    rate_limit = await check_p2p_user_rate_limit(message.from_user.id)
+
+    if not rate_limit.allowed:
+        await message.answer(format_rate_limit_message(rate_limit.wait_seconds))
+        return
+
     async with AsyncSessionLocal() as session:
         settings = await get_filters(session, message.from_user.id)
 
     fetch_rows = get_fetch_order_count(settings)
     logger.info(
-        "P2P Binance flow start: telegram_id=%s trade_type=%s fetch_rows=%s display_count=%s desc_mode=%s allow_split=%s allow_third_party=%s",
+        "P2P Binance flow start: telegram_id=%s trade_type=%s fetch_rows=%s display_count=%s desc_mode=%s payment_categories=%s max_minutes=%s min_trades=%s min_rating=%s min_completion=%s allow_split=%s allow_third_party=%s",
         message.from_user.id,
         trade_type,
         fetch_rows,
         settings.display_order_count,
         settings.description_check_mode,
+        sorted(settings.payment_categories),
+        settings.max_order_minutes,
+        settings.min_trades,
+        settings.min_rating,
+        settings.min_completion,
         settings.allow_split_payments,
         settings.allow_third_party_payments,
     )
 
-    ads = await fetch_binance_p2p(
-        trade_type=trade_type,
-        asset="USDT",
-        fiat="UAH",
+    ads = await get_cached_p2p_orders(
+        exchange="binance",
+        direction=trade_type,
         rows=fetch_rows,
+        fetcher=lambda: fetch_binance_p2p(
+            trade_type=trade_type,
+            asset="USDT",
+            fiat="UAH",
+            rows=fetch_rows,
+        ),
     )
     logger.info(
         "P2P Binance fetched: trade_type=%s rows=%s",
@@ -106,20 +128,26 @@ async def send_binance_ads(
         return
 
     if needs_description_filtering(settings):
-        details = await fetch_binance_p2p_details(
-            [ad.get("adv", {}).get("advNo") for ad in filtered_ads]
-        )
-        attach_binance_details(filtered_ads, details)
-        logger.info(
-            "P2P Binance detail fetch for description filters: candidates=%s details=%s descriptions=%s",
-            len(filtered_ads),
-            len(details),
-            count_binance_descriptions(filtered_ads),
-        )
-        filtered_ads = await filter_orders_by_description(
+        async def prepare_binance_description_batch(candidates: list[dict]):
+            details = await get_cached_p2p_details(
+                exchange="binance",
+                item_ids=[ad.get("adv", {}).get("advNo") for ad in candidates],
+                fetcher=fetch_binance_p2p_details,
+            )
+            attach_binance_details(candidates, details)
+            logger.info(
+                "P2P Binance detail fetch for description filters: candidates=%s details=%s descriptions=%s",
+                len(candidates),
+                len(details),
+                count_binance_descriptions(candidates),
+            )
+
+        filtered_ads = await filter_orders_by_description_until(
             filtered_ads,
             "binance",
             settings,
+            limit=settings.display_order_count,
+            prepare_batch=prepare_binance_description_batch,
         )
         logger.info(
             "P2P Binance description filters result: output=%s",
@@ -135,12 +163,14 @@ async def send_binance_ads(
             return
 
     ads = filtered_ads[: settings.display_order_count]
-    details = await fetch_binance_p2p_details(
-        [
+    details = await get_cached_p2p_details(
+        exchange="binance",
+        item_ids=[
             ad.get("adv", {}).get("advNo")
             for ad in ads
             if not isinstance(ad.get("_detail"), dict)
-        ]
+        ],
+        fetcher=fetch_binance_p2p_details,
     )
     attach_binance_details(ads, details)
     logger.info(
@@ -152,5 +182,5 @@ async def send_binance_ads(
     )
     blocks = build_binance_order_blocks(ads)
 
-    logger.info("P2P Binance sending messages: blocks=%s", len(blocks))
-    await send_html_blocks(message, title=title, blocks=blocks)
+    logger.info("P2P Binance sending paginated message: blocks=%s", len(blocks))
+    await send_paginated_html_blocks(message, title=title, blocks=blocks)

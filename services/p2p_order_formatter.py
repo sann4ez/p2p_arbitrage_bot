@@ -2,6 +2,10 @@ from html import escape
 from urllib.parse import quote
 
 from db.dto import P2POrderMessage
+from services.okx_order_payload import (
+    get_okx_order_description_values,
+    get_okx_order_id,
+)
 
 
 BINANCE_P2P_AD_URL = "https://c2c.binance.com/en/adv?code={adv_no}"
@@ -65,15 +69,7 @@ def build_okx_order_message(ad: dict, side: str) -> P2POrderMessage:
         rating=rating,
         completion_rate=completion_rate,
         trade_minutes=ad.get("paymentTimeoutMinutes"),
-        description=format_order_description(
-            ad.get("remarks"),
-            ad.get("remark"),
-            ad.get("description"),
-            ad.get("desc"),
-            ad.get("autoReplyMsg"),
-            ad.get("tradingTerms"),
-            ad.get("terms"),
-        ),
+        description=format_order_description(*get_okx_order_description_values(ad)),
         order_url=build_okx_order_url(ad, side),
     )
 
@@ -128,6 +124,19 @@ def attach_binance_details(ads: list[dict], details: dict[str, dict]):
             ad["_detail"] = detail
 
 
+def attach_okx_details(ads: list[dict], details: dict[str, dict]):
+    for ad in ads:
+        order_id = get_okx_order_id(ad)
+
+        if not order_id:
+            continue
+
+        detail = details.get(order_id)
+
+        if detail:
+            ad["_detail"] = detail
+
+
 def count_binance_descriptions(ads: list[dict]) -> int:
     return sum(1 for ad in ads if build_binance_order_message(ad).description)
 
@@ -151,7 +160,7 @@ def build_okx_order_url(ad: dict, side: str) -> str | None:
     if not base_url:
         return None
 
-    order_id = ad.get("id")
+    order_id = get_okx_order_id(ad)
 
     if not order_id:
         return base_url

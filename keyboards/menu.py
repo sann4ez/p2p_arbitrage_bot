@@ -4,7 +4,9 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, KeyboardBu
 
 from db.dto import (
     CANDIDATE_ORDER_COUNT_OPTIONS,
+    DESCRIPTION_CHECK_GPT,
     DESCRIPTION_CHECK_MODE_OPTIONS,
+    DESCRIPTION_CHECK_REGEX_GPT,
     DISPLAY_ORDER_COUNT_OPTIONS,
     MIN_PERCENT_OPTIONS,
     MIN_TRADES_OPTIONS,
@@ -12,6 +14,7 @@ from db.dto import (
     PAYMENT_CATEGORY_FOP,
     PAYMENT_CATEGORY_OTHER,
     PAYMENT_CATEGORY_PERSON,
+    get_currency_options,
 )
 
 
@@ -22,6 +25,11 @@ BTN_BINANCE = "Binance" if BINANCE_ICON_CUSTOM_EMOJI_ID else "🟡 Binance"
 BTN_OKX = "OKX" if OKX_ICON_CUSTOM_EMOJI_ID else "⚫ OKX"
 BTN_P2P = "💱 P2P"
 BTN_CABINET = "👤 Особистий кабінет"
+BTN_ADMIN_PANEL = "🛠 Адмін панель"
+BTN_ADMIN_CURRENCIES = "🪙 Валюти"
+BTN_ADD_FIAT_CURRENCY = "➕ Додати фіат"
+BTN_ADD_CRYPTO_CURRENCY = "➕ Додати крипту"
+BTN_LIST_CURRENCIES = "📋 Список валют"
 BTN_MY_INFO = "ℹ️ Інфо про себе"
 BTN_P2P_FILTERS = "⚙️ Фільтри P2P"
 BTN_UAH_TO_USDT = "₴ UAH → ₮ USDT"
@@ -47,6 +55,8 @@ CB_FILTERS_RESET = "p2pf:reset"
 CB_FILTERS_SCREEN_PREFIX = "p2pf:screen:"
 CB_FILTERS_SET_PREFIX = "p2pf:set:"
 CB_FILTERS_PAY_PREFIX = "p2pf:pay:"
+CB_ADMIN_CURRENCIES_MENU = "admcur:menu"
+CB_ADMIN_CURRENCY_ADD_PREFIX = "admcur:add:"
 
 FILTER_SCREEN_ORDER_TIME = "time"
 FILTER_SCREEN_MIN_TRADES = "trades"
@@ -69,14 +79,19 @@ def keyboard_button(text: str, icon_custom_emoji_id: str | None = None):
     return KeyboardButton(**kwargs)
 
 
-def root_menu_kb():
-    return ReplyKeyboardMarkup(
-        keyboard=[
-            [
-                KeyboardButton(text=BTN_P2P),
-                KeyboardButton(text=BTN_CABINET),
-            ],
+def root_menu_kb(can_view_admin: bool = False):
+    keyboard = [
+        [
+            KeyboardButton(text=BTN_P2P),
+            KeyboardButton(text=BTN_CABINET),
         ],
+    ]
+
+    if can_view_admin:
+        keyboard.append([KeyboardButton(text=BTN_ADMIN_PANEL)])
+
+    return ReplyKeyboardMarkup(
+        keyboard=keyboard,
         resize_keyboard=True,
     )
 
@@ -109,6 +124,76 @@ def cabinet_kb():
         ],
         resize_keyboard=True,
     )
+
+
+def admin_menu_kb(can_manage_currencies: bool = False):
+    keyboard = []
+
+    if can_manage_currencies:
+        keyboard.append([KeyboardButton(text=BTN_ADMIN_CURRENCIES)])
+
+    keyboard.append([KeyboardButton(text=BTN_BACK)])
+
+    return ReplyKeyboardMarkup(
+        keyboard=keyboard,
+        resize_keyboard=True,
+    )
+
+
+def admin_currencies_kb():
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [
+                KeyboardButton(text=BTN_ADD_FIAT_CURRENCY),
+                KeyboardButton(text=BTN_ADD_CRYPTO_CURRENCY),
+            ],
+            [
+                KeyboardButton(text=BTN_LIST_CURRENCIES),
+            ],
+            [
+                KeyboardButton(text=BTN_BACK),
+            ],
+        ],
+        resize_keyboard=True,
+    )
+
+
+def admin_currency_options_inline_kb(
+    currency_type: str,
+    existing_codes: set[str] | None = None,
+):
+    existing_codes = existing_codes or set()
+    rows = []
+
+    for option in get_currency_options(currency_type):
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text=format_currency_option_label(option, existing_codes),
+                    callback_data=(
+                        f"{CB_ADMIN_CURRENCY_ADD_PREFIX}"
+                        f"{currency_type}:{option.code}"
+                    ),
+                ),
+            ]
+        )
+
+    rows.append(
+        [
+            InlineKeyboardButton(
+                text="⬅️ До валют",
+                callback_data=CB_ADMIN_CURRENCIES_MENU,
+            ),
+        ]
+    )
+
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def format_currency_option_label(option, existing_codes: set[str]) -> str:
+    prefix = "✅" if option.code in existing_codes else "➕"
+
+    return f"{prefix} {option.code} — {option.name}"
 
 
 def p2p_filters_kb(settings):
@@ -443,7 +528,13 @@ def format_allowed_toggle(value: bool) -> str:
 
 
 def format_description_check_mode(value: str) -> str:
-    return "GPT" if value == "gpt" else "Regex"
+    if value == DESCRIPTION_CHECK_GPT:
+        return "GPT"
+
+    if value == DESCRIPTION_CHECK_REGEX_GPT:
+        return "Regex + GPT"
+
+    return "Regex"
 
 
 def format_candidate_order_count(settings) -> str:
