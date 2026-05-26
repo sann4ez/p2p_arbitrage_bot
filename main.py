@@ -1,16 +1,28 @@
-# This is a sample Python script.
+import asyncio
+import logging
 
-# Press Shift+F10 to execute it or replace it with your code.
-# Press Double Shift to search everywhere for classes, files, tool windows, actions, and settings.
+from aiogram import Bot, Dispatcher
+from aiogram.client.default import DefaultBotProperties
+from config import Config
 
+from handlers import register_routes
 
-def print_hi(name):
-    # Use a breakpoint in the code line below to debug your script.
-    print(f'Hi, {name}')  # Press Ctrl+F8 to toggle the breakpoint.
+logging.basicConfig(
+    level=getattr(logging, Config.LOG_LEVEL, logging.INFO),
+    format="%(asctime)s %(levelname)s:%(name)s:%(message)s",
+)
 
+async def main():
+    bot = Bot(token=Config.TELEGRAM_TOKEN, default=DefaultBotProperties(parse_mode="HTML"))
+    dp = Dispatcher()
 
-# Press the green button in the gutter to run the script.
-if __name__ == '__main__':
-    print_hi('PyCharm')
+    register_routes(dp)
 
-# See PyCharm help at https://www.jetbrains.com/help/pycharm/
+    await dp.start_polling(bot)
+
+if __name__ == "__main__":
+    try:
+        print('Бот запущено')
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        print('Бот зупинено')
