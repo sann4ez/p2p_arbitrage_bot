@@ -15,4 +15,3 @@ env/
 
 # secrets
 *.env
-config.py
