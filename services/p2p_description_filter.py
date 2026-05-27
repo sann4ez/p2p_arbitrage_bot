@@ -1,7 +1,7 @@
 import logging
 from collections.abc import Awaitable, Callable
 
-from db.dto import P2PFilterSettings
+from db.dto import PAYMENT_CATEGORIES, P2PFilterSettings
 from services.okx_order_payload import get_okx_order_description_values
 from services.p2p_filters import (
     DESCRIPTION_CHECK_GPT,
@@ -20,7 +20,11 @@ MAX_DESCRIPTION_FILTER_BATCH_SIZE = 50
 
 
 def needs_description_filtering(settings: P2PFilterSettings) -> bool:
-    return not settings.allow_third_party_payments or not settings.allow_split_payments
+    return (
+        not settings.allow_third_party_payments
+        or not settings.allow_split_payments
+        or settings.payment_categories != PAYMENT_CATEGORIES
+    )
 
 
 async def filter_orders_by_description(
@@ -48,7 +52,11 @@ async def filter_orders_by_description(
         return orders
 
     if mode not in (DESCRIPTION_CHECK_GPT, DESCRIPTION_CHECK_REGEX_GPT):
-        filtered_orders = filter_orders(orders, exchange, settings)
+        filtered_orders = [
+            order
+            for order in filter_orders(orders, exchange, settings)
+            if not should_block_missing_description(order, exchange)
+        ]
         logger.info(
             "P2P description filter regex result: exchange=%s input=%s output=%s blocked=%s",
             exchange,
@@ -103,11 +111,16 @@ async def filter_orders_by_description(
     classifications = await classify_p2p_descriptions(descriptions)
 
     if not classifications:
-        filtered_orders = (
+        fallback_orders = (
             gpt_orders
             if mode == DESCRIPTION_CHECK_REGEX_GPT
             else filter_orders(orders, exchange, settings)
         )
+        filtered_orders = [
+            order
+            for order in fallback_orders
+            if not should_block_missing_description(order, exchange)
+        ]
         logger.warning(
             "P2P description filter GPT fallback to regex: exchange=%s input=%s output=%s reason=no_classifications",
             exchange,
@@ -121,6 +134,7 @@ async def filter_orders_by_description(
     blocked_third_party = 0
     blocked_both = 0
     missing_classifications = 0
+    missing_descriptions_blocked = 0
     regex_safety_blocked = 0
 
     for index, order in enumerate(gpt_orders):
@@ -132,6 +146,10 @@ async def filter_orders_by_description(
 
         if not classification:
             missing_classifications += 1
+
+            if should_block_missing_description(order, exchange):
+                missing_descriptions_blocked += 1
+                continue
 
             filtered_orders.append(order)
 
@@ -155,12 +173,13 @@ async def filter_orders_by_description(
             filtered_orders.append(order)
 
     logger.info(
-        "P2P description filter GPT result: exchange=%s input=%s output=%s classifications=%s missing=%s blocked_split=%s blocked_third_party=%s blocked_both=%s regex_safety_blocked=%s",
+        "P2P description filter GPT result: exchange=%s input=%s output=%s classifications=%s missing=%s missing_descriptions_blocked=%s blocked_split=%s blocked_third_party=%s blocked_both=%s regex_safety_blocked=%s",
         exchange,
         len(gpt_orders),
         len(filtered_orders),
         len(classifications),
         missing_classifications,
+        missing_descriptions_blocked,
         blocked_split,
         blocked_third_party,
         blocked_both,
@@ -252,6 +271,10 @@ def order_matches_regex_description(
         return False
 
     return True
+
+
+def should_block_missing_description(order: dict, exchange: str) -> bool:
+    return exchange == "okx" and not get_order_description(order, exchange)
 
 
 def get_order_description(order: dict, exchange: str) -> str | None:

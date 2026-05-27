@@ -36,10 +36,20 @@ FOP_PAYMENT_KEYWORDS = (
     "рахунок",
 )
 
+BUSINESS_PAYMENT_TERM_RE = (
+    r"(?:фоп|fop|iban|тов|тзов|ооо|llc|юридич\w*|юр\.?\s*особ\w*|"
+    r"legal\s+entity|company\s+account|business\s+account)"
+)
+
+BUSINESS_PAYMENT_PATTERNS = (
+    re.compile(rf"\b{BUSINESS_PAYMENT_TERM_RE}\b", re.IGNORECASE),
+)
+
 FOP_ONLY_PAYMENT_PATTERNS = (
-    re.compile(r"\b(?:тільки|лише|только)\b.{0,40}\b(?:фоп|fop|iban)\b", re.IGNORECASE),
-    re.compile(r"\b(?:фоп|fop|iban)\b.{0,40}\b(?:тільки|лише|только)\b", re.IGNORECASE),
-    re.compile(r"\bоплат\w*\b.{0,40}\b(?:фоп|fop|iban)\b", re.IGNORECASE),
+    re.compile(rf"\b(?:тільки|лише|только)\b.{{0,60}}\b{BUSINESS_PAYMENT_TERM_RE}\b", re.IGNORECASE),
+    re.compile(rf"\b{BUSINESS_PAYMENT_TERM_RE}\b.{{0,60}}\b(?:тільки|лише|только)\b", re.IGNORECASE),
+    re.compile(rf"\b(?:оплат\w*|виплат\w*|выплат\w*|переказ\w*|перевод\w*)\b.{{0,60}}\b{BUSINESS_PAYMENT_TERM_RE}\b", re.IGNORECASE),
+    re.compile(rf"\b(?:на|по)\s+{BUSINESS_PAYMENT_TERM_RE}\b", re.IGNORECASE),
     re.compile(r"\b(?:на|на\s+банківський)\s+рахунок\b", re.IGNORECASE),
 )
 
@@ -89,6 +99,10 @@ THIRD_PARTY_PAYMENT_KEYWORDS = (
     "от других лиц",
     "від різних осіб",
     "от разных лиц",
+    "від довірених осіб",
+    "от доверенных лиц",
+    "довірених осіб",
+    "доверенных лиц",
     "third party",
     "third-party",
     "3rd party",
@@ -97,6 +111,38 @@ THIRD_PARTY_PAYMENT_KEYWORDS = (
     "from different name",
     "different persons",
     "different names",
+    "третье лицо",
+    "третьи лица",
+    "третє лице",
+    "треті особи",
+    "третім особам",
+)
+
+THIRD_PARTY_TERM_RE = (
+    r"(?:трет\w*\s+(?:ос(?:о|і)б\w*|лиц\w*)|"
+    r"3\s*[-\s]*(?:х|и|іх|им|м)?\s*(?:ос(?:о|і)б\w*|лиц\w*)|"
+    r"3rd\s+part\w*|third[-\s]+part\w*)"
+)
+
+THIRD_PARTY_PAYMENT_PATTERNS = (
+    re.compile(
+        rf"(?:на|для|відправ\w*|отправ\w*|перевод\w*|переказ\w*|"
+        rf"оплат\w*|прийма\w*|принима\w*)\W{{0,60}}{THIRD_PARTY_TERM_RE}",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        rf"{THIRD_PARTY_TERM_RE}\W{{0,60}}"
+        rf"(?:можн\w*|прийма\w*|принима\w*|відправ\w*|отправ\w*|"
+        rf"перевод\w*|переказ\w*)",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"(?:карт[ауиі]|карта|картка)\s+"
+        r"(?:чоловік\w*|чоловіка|муж\w*|мужа|жінк\w*|жены|дружин\w*|"
+        r"брат\w*|сестр\w*|мам\w*|матер\w*|пап\w*|батьк\w*|отц\w*|"
+        r"родич\w*|родственник\w*)",
+        re.IGNORECASE,
+    ),
 )
 
 THIRD_PARTY_DENY_KEYWORDS = (
@@ -128,6 +174,21 @@ THIRD_PARTY_DENY_KEYWORDS = (
     "don't accept third",
     "not accept third",
     "third parties are not accepted",
+)
+
+THIRD_PARTY_DENY_PATTERNS = (
+    re.compile(
+        rf"(?:не|ні|нет|немає|нема|заборон\w*|запрещ\w*|"
+        rf"не\s+перевод\w*|не\s+переказ\w*|не\s+відправ\w*|не\s+отправ\w*)"
+        rf"\W{{0,80}}{THIRD_PARTY_TERM_RE}",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        rf"{THIRD_PARTY_TERM_RE}\W{{0,80}}"
+        rf"(?:не|ні|нет|немає|нема|заборон\w*|запрещ\w*|"
+        rf"не\s+перевод\w*|не\s+переказ\w*|не\s+відправ\w*|не\s+отправ\w*)",
+        re.IGNORECASE,
+    ),
 )
 
 SPLIT_PAYMENT_KEYWORDS = (
@@ -246,14 +307,16 @@ SPLIT_PAYMENT_PATTERNS = (
 DESCRIPTION_PAYMENT_TIME_PATTERNS = (
     re.compile(
         r"(?:оплат\w*|поступлен\w*|зачислен\w*|закрыт\w*|закрит\w*|"
-        r"ожидан\w*|очікуван\w*|может\s+занять|може\s+зайняти|срок\s+оплат\w*)"
+        r"ожидан\w*|очікуван\w*|может\s+занять|може\s+зайняти|срок\s+оплат\w*|"
+        r"час\s+виконан\w*|термін\s+виконан\w*|время\s+исполнен\w*|срок\s+исполнен\w*)"
         r"\D{0,80}(?:от|від)?\s*(\d+)\s*(?:до|-)\s*(\d+)\s*"
         r"(час\w*|годин\w*|год\w*|минут\w*|мин\w*|хвилин\w*|хв\w*)",
         re.IGNORECASE,
     ),
     re.compile(
         r"(?:оплат\w*|поступлен\w*|зачислен\w*|закрыт\w*|закрит\w*|"
-        r"ожидан\w*|очікуван\w*|срок\s+оплат\w*)"
+        r"ожидан\w*|очікуван\w*|срок\s+оплат\w*|"
+        r"час\s+виконан\w*|термін\s+виконан\w*|время\s+исполнен\w*|срок\s+исполнен\w*)"
         r"\D{0,80}(?:до|up\s+to)\s*(\d+)\s*"
         r"(час\w*|годин\w*|год\w*|минут\w*|мин\w*|хвилин\w*|хв\w*)",
         re.IGNORECASE,
@@ -737,6 +800,7 @@ def filter_orders(
     settings: P2PFilterSettings,
     *,
     apply_description_filters: bool = True,
+    apply_payment_filters: bool = True,
 ) -> list[dict]:
     if not orders:
         return []
@@ -748,6 +812,7 @@ def filter_orders(
             get_order_metrics(order, exchange),
             settings,
             apply_description_filters=apply_description_filters,
+            apply_payment_filters=apply_payment_filters,
         )
     ]
 
@@ -829,6 +894,7 @@ def order_matches(
     settings: P2PFilterSettings,
     *,
     apply_description_filters: bool = True,
+    apply_payment_filters: bool = True,
 ) -> bool:
     if settings.max_order_minutes is not None and not value_lte(
         metrics["minutes"],
@@ -861,7 +927,10 @@ def order_matches(
         if not settings.allow_split_payments and metrics["split_payments"]:
             return False
 
-    return bool(settings.payment_categories & metrics["payment_categories"])
+    if apply_payment_filters:
+        return bool(settings.payment_categories & metrics["payment_categories"])
+
+    return True
 
 
 def value_lte(value, threshold) -> bool:
@@ -932,7 +1001,9 @@ def has_fop_payment_terms(description: str | None) -> bool:
     if not text:
         return False
 
-    return contains_any(text, FOP_PAYMENT_KEYWORDS)
+    return contains_any(text, FOP_PAYMENT_KEYWORDS) or any(
+        pattern.search(text) for pattern in BUSINESS_PAYMENT_PATTERNS
+    )
 
 
 def has_fop_only_payment_terms(description: str | None) -> bool:
@@ -955,10 +1026,14 @@ def has_third_party_payment_terms(description: str | None) -> bool:
     if not text:
         return False
 
-    if contains_any(text, THIRD_PARTY_DENY_KEYWORDS):
+    if contains_any(text, THIRD_PARTY_DENY_KEYWORDS) or any(
+        pattern.search(text) for pattern in THIRD_PARTY_DENY_PATTERNS
+    ):
         return False
 
-    return contains_any(text, THIRD_PARTY_PAYMENT_KEYWORDS)
+    return contains_any(text, THIRD_PARTY_PAYMENT_KEYWORDS) or any(
+        pattern.search(text) for pattern in THIRD_PARTY_PAYMENT_PATTERNS
+    )
 
 
 def has_split_payment_terms(description: str | None) -> bool:
@@ -1080,7 +1155,7 @@ def format_min_percent(value: float | None) -> str:
 
 def format_payment_categories(categories: set[str]) -> str:
     labels = {
-        PAYMENT_CATEGORY_FOP: "ФОП/IBAN",
+        PAYMENT_CATEGORY_FOP: "ФОП/ТОВ/IBAN",
         PAYMENT_CATEGORY_PERSON: "фізособа/карта",
         PAYMENT_CATEGORY_OTHER: "інші",
     }

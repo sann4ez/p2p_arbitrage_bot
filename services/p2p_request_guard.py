@@ -109,6 +109,7 @@ async def get_cached_p2p_details(
         exchange=exchange,
         ttl_seconds=ttl_seconds,
         fetcher=lambda: fetcher(missing_item_ids),
+        cache_empty=False,
     )
 
     now = time.monotonic()
@@ -134,10 +135,12 @@ async def get_cached_p2p_details(
             )
 
             details[str(item_id)] = copy.deepcopy(detail)
-            _cache[get_detail_cache_key(exchange, item_id)] = CacheEntry(
-                value=copy.deepcopy(detail),
-                expires_at=now + ttl_seconds,
-            )
+
+            if detail:
+                _cache[get_detail_cache_key(exchange, item_id)] = CacheEntry(
+                    value=copy.deepcopy(detail),
+                    expires_at=now + ttl_seconds,
+                )
 
     return details
 
@@ -148,6 +151,7 @@ async def get_or_fetch_cache(
     exchange: str,
     ttl_seconds: float,
     fetcher: Callable[[], Awaitable],
+    cache_empty: bool = True,
 ):
     cached_value = await get_cached_value(cache_key)
 
@@ -171,7 +175,9 @@ async def get_or_fetch_cache(
         )
         await wait_for_global_cooldown(exchange)
         value = await fetcher()
-        await set_cached_value(cache_key, value, ttl_seconds)
+
+        if cache_empty or value:
+            await set_cached_value(cache_key, value, ttl_seconds)
 
         return copy.deepcopy(value)
 

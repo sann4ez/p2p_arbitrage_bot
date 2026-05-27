@@ -1,16 +1,26 @@
 import asyncio
+import logging
 import time
 
 import aiohttp
 
 from services.okx_order_payload import flatten_okx_detail
 
+logger = logging.getLogger(__name__)
+
 OKX_P2P_URL = "https://www.okx.com/v3/c2c/tradingOrders/books"
 OKX_P2P_DETAIL_URL = "https://www.okx.com/v3/c2c/tradingOrders/{order_id}"
 OKX_DETAIL_CONCURRENCY = 10
+OKX_P2P_MARKET_URLS = {
+    "sell": "https://www.okx.com/p2p-markets/uah/buy-usdt",
+    "buy": "https://www.okx.com/p2p-markets/uah/sell-usdt",
+}
 OKX_HEADERS = {
     "Accept": "application/json, text/plain, */*",
     "Accept-Language": "uk-UA,uk;q=0.9,en-US;q=0.8,en;q=0.7",
+    "App-Type": "web",
+    "X-Locale": "uk_UA",
+    "X-Utc": "2",
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
         "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -55,7 +65,11 @@ async def fetch_okx_p2p(
     return orders[:rows]
 
 
-async def fetch_okx_p2p_details(order_ids: list[object]) -> dict[str, dict]:
+async def fetch_okx_p2p_details(
+    order_ids: list[object],
+    *,
+    side: str | None = None,
+) -> dict[str, dict]:
     unique_order_ids = []
     seen = set()
 
@@ -82,6 +96,13 @@ async def fetch_okx_p2p_details(order_ids: list[object]) -> dict[str, dict]:
             results = await asyncio.gather(
                 *(
                     _fetch_okx_p2p_detail_limited(session, semaphore, order_id)
+                    if side is None
+                    else _fetch_okx_p2p_detail_limited(
+                        session,
+                        semaphore,
+                        order_id,
+                        side=side,
+                    )
                     for order_id in unique_order_ids
                 ),
                 return_exceptions=True,
@@ -107,36 +128,81 @@ async def _fetch_okx_p2p_detail_limited(
     session: aiohttp.ClientSession,
     semaphore: asyncio.Semaphore,
     order_id: str,
+    *,
+    side: str | None = None,
 ) -> tuple[str, dict]:
     async with semaphore:
-        return await _fetch_okx_p2p_detail(session, order_id)
+        return await _fetch_okx_p2p_detail(session, order_id, side=side)
 
 
 async def _fetch_okx_p2p_detail(
     session: aiohttp.ClientSession,
     order_id: str,
+    *,
+    side: str | None = None,
 ) -> tuple[str, dict]:
-    headers = {
-        "Referer": "https://www.okx.com/p2p-markets/uah/buy-usdt",
-    }
+    referers = get_okx_detail_referers(order_id, side)
+    last_status = None
+    last_body = ""
 
-    try:
-        async with session.get(
-            OKX_P2P_DETAIL_URL.format(order_id=order_id),
-            params={"t": int(time.time() * 1000)},
-            headers=headers,
-        ) as response:
-            response.raise_for_status()
-            data = await response.json(content_type=None)
-    except (aiohttp.ClientError, asyncio.TimeoutError):
-        return order_id, {}
+    for referer in referers:
+        headers = {
+            "Origin": "https://www.okx.com",
+            "Referer": referer,
+            "Sec-Fetch-Dest": "empty",
+            "Sec-Fetch-Mode": "cors",
+            "Sec-Fetch-Site": "same-origin",
+            "X-Requested-With": "XMLHttpRequest",
+        }
 
-    detail = extract_okx_detail(data)
+        try:
+            async with session.get(
+                OKX_P2P_DETAIL_URL.format(order_id=order_id),
+                params={"t": int(time.time() * 1000)},
+                headers=headers,
+            ) as response:
+                last_status = response.status
 
-    if not detail:
-        return order_id, {}
+                if response.status >= 400:
+                    last_body = await response.text()
+                    continue
 
-    return order_id, detail
+                data = await response.json(content_type=None)
+        except (aiohttp.ClientError, asyncio.TimeoutError) as error:
+            logger.warning(
+                "OKX detail request failed: order_id=%s side=%s error=%s",
+                order_id,
+                side,
+                type(error).__name__,
+            )
+            return order_id, {}
+
+        detail = extract_okx_detail(data)
+
+        if detail:
+            return order_id, detail
+
+    logger.warning(
+        "OKX detail request returned empty detail: order_id=%s side=%s status=%s body=%s",
+        order_id,
+        side,
+        last_status,
+        last_body[:300],
+    )
+
+    return order_id, {}
+
+
+def get_okx_detail_referers(order_id: str, side: str | None = None) -> list[str]:
+    sides = [side] if side in OKX_P2P_MARKET_URLS else ["sell", "buy"]
+    referers = []
+
+    for item in sides:
+        base_url = OKX_P2P_MARKET_URLS[item]
+        referers.append(f"{base_url}?id={order_id}")
+        referers.append(base_url)
+
+    return referers
 
 
 def extract_okx_detail(data: dict) -> dict:

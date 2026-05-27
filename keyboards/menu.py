@@ -44,7 +44,7 @@ BTN_FILTER_CANDIDATE_COUNT_PREFIX = "🔍 Кандидати:"
 BTN_FILTER_DESCRIPTION_CHECK_PREFIX = "🔎 Перевірка:"
 BTN_FILTER_MIN_RATING_PREFIX = "⭐ Оцінка:"
 BTN_FILTER_MIN_COMPLETION_PREFIX = "✅ Виконання:"
-BTN_FILTER_FOP_PREFIX = "🏦 ФОП/IBAN:"
+BTN_FILTER_FOP_PREFIX = "🏦 ФОП/ТОВ/IBAN:"
 BTN_FILTER_PERSON_PREFIX = "👤 Фізособа/карта:"
 BTN_FILTER_OTHER_PREFIX = "🌐 Інші методи:"
 BTN_FILTER_THIRD_PARTY_PREFIX = "🧾 Треті особи:"
@@ -453,7 +453,7 @@ def payment_methods_inline_kb(settings):
         inline_keyboard=[
             [
                 InlineKeyboardButton(
-                    text=selected_label(PAYMENT_CATEGORY_FOP in categories, "ФОП/IBAN"),
+                    text=selected_label(PAYMENT_CATEGORY_FOP in categories, "ФОП/ТОВ/IBAN"),
                     callback_data=f"{CB_FILTERS_PAY_PREFIX}{PAYMENT_CATEGORY_FOP}",
                 ),
             ],

@@ -108,6 +108,7 @@ async def send_okx_ads(
         "okx",
         settings,
         apply_description_filters=False,
+        apply_payment_filters=not needs_description_filtering(settings),
     )
     logger.info(
         "P2P OKX base filters result: input=%s output=%s blocked=%s",
@@ -129,7 +130,7 @@ async def send_okx_ads(
             details = await get_cached_p2p_details(
                 exchange="okx",
                 item_ids=[get_okx_order_id(ad) for ad in candidates],
-                fetcher=fetch_okx_p2p_details,
+                fetcher=lambda order_ids: fetch_okx_p2p_details(order_ids, side=side),
             )
             attach_okx_details(candidates, details)
             logger.info(
@@ -164,7 +165,7 @@ async def send_okx_ads(
             for ad in ads
             if not isinstance(ad.get("_detail"), dict)
         ],
-        fetcher=fetch_okx_p2p_details,
+        fetcher=lambda order_ids: fetch_okx_p2p_details(order_ids, side=side),
     )
     attach_okx_details(ads, details)
     logger.info(

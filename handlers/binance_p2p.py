@@ -111,6 +111,7 @@ async def send_binance_ads(
         "binance",
         settings,
         apply_description_filters=False,
+        apply_payment_filters=not needs_description_filtering(settings),
     )
     logger.info(
         "P2P Binance base filters result: input=%s output=%s blocked=%s",
