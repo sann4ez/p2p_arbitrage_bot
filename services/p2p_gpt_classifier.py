@@ -14,8 +14,13 @@ from db.dto import P2PDescriptionClassification
 logger = logging.getLogger(__name__)
 
 OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses"
-DEFAULT_OPENAI_P2P_MODEL = "gpt-5-nano"
-DEFAULT_OPENAI_P2P_CLASSIFIER_TIMEOUT = 20
+DEFAULT_OPENAI_P2P_MODEL = "gpt-5.5"
+DEFAULT_OPENAI_P2P_REASONING_EFFORT = "high"
+DEFAULT_OPENAI_P2P_CLASSIFIER_TIMEOUT = 180
+DEFAULT_OPENAI_P2P_CLASSIFIER_BATCH_SIZE = 5
+DEFAULT_OPENAI_P2P_CLASSIFIER_CONCURRENCY = 1
+DEFAULT_OPENAI_P2P_CLASSIFIER_SINGLE_BATCH = True
+DEFAULT_OPENAI_P2P_MIN_SAFE_CONFIDENCE = 0.75
 DEFAULT_OPENAI_FILE_SEARCH_MAX_RESULTS = 3
 MAX_DESCRIPTION_CHARS = 2000
 P2P_CLASSIFIER_INSTRUCTIONS = (
@@ -24,9 +29,18 @@ P2P_CLASSIFIER_INSTRUCTIONS = (
     "1) чи дозволяється або вимагається оплата кількома платежами/переказами; "
     "2) чи дозволяється або вимагається оплата від третьої особи, тобто відправник "
     "може мати інше ім'я, ніж власник акаунта. "
-    "Поверни true лише коли це явно дозволено або явно вимагається. "
-    "Якщо текст це забороняє, наприклад 'не приймаю від 3-х осіб' або 'одним платежем', "
-    "поверни false. Якщо доказів недостатньо, також поверни false. "
+    "Поверни true, коли ризик явно дозволено, явно вимагається або опис містить "
+    "формулювання, яке практично означає цей ризик. "
+    "split_payments=true для фраз на кшталт 'платежей на поступление будет от 4+', "
+    "'оплата частями', 'несколько переводов', 'по 300 грн', '4+ платежа', "
+    "'декількома переказами', 'может прийти несколькими поступлениями'. "
+    "third_party_payments=true для фраз на кшталт 'можно от третьих лиц', "
+    "'оплата от доверенного лица', 'банк доверенного лица', 'не обязательно со своей карты'. "
+    "Якщо в описі є суперечність, наприклад одночасно 'одним платежем' і "
+    "'платежей на поступление будет от 4+', обирай ризикову інтерпретацію і повертай true. "
+    "Поверни false лише коли опис прямо забороняє ризик або немає доказів ризику. "
+    "confidence показує наскільки ти впевнений у всій класифікації: 1.0 для явних фраз, "
+    "0.5-0.7 для нечітких формулювань, нижче 0.5 якщо текст недостатній. "
     "Розумій українську, російську та англійську. "
     "Відповідай тільки згідно з JSON schema."
 )
@@ -99,16 +113,20 @@ async def classify_p2p_descriptions(
 async def classify_missing_items(
     items: list[dict],
 ) -> dict[int, P2PDescriptionClassification]:
-    batches = chunk_items(items, get_classifier_batch_size())
-    concurrency = get_classifier_concurrency()
+    single_batch = should_use_single_batch()
+    batches = [items] if single_batch else chunk_items(items, get_classifier_batch_size())
+    concurrency = 1 if single_batch else get_classifier_concurrency()
+    batch_size = len(items) if single_batch else get_classifier_batch_size()
 
     logger.info(
-        "OpenAI P2P classifier batches start: items=%s batches=%s batch_size=%s concurrency=%s model=%s vector_stores=%s timeout=%ss file_search_results=%s",
+        "OpenAI P2P classifier batches start: items=%s batches=%s batch_size=%s concurrency=%s single_batch=%s model=%s reasoning=%s vector_stores=%s timeout=%ss file_search_results=%s",
         len(items),
         len(batches),
-        get_classifier_batch_size(),
+        batch_size,
         concurrency,
+        single_batch,
         get_openai_model(),
+        get_reasoning_effort() or "default",
         len(get_vector_store_ids()),
         get_classifier_timeout(),
         get_file_search_max_results(),
@@ -235,10 +253,14 @@ def build_responses_payload(items: list[dict]) -> dict:
                 "role": "user",
                 "content": (
                     "Classify these order descriptions. "
-                    "split_payments means the merchant allows or requires one order to be "
-                    "paid by several payments/transfers, including phrases like 'по 300 грн'. "
-                    "third_party_payments means the merchant allows payment from a person "
-                    "whose name is different from the account owner. "
+                    "Quality is more important than speed. "
+                    "split_payments means the merchant allows, requires, or warns that one "
+                    "order may be paid/credited by several payments, transfers, receipts, "
+                    "or incoming deposits. Treat 'платежей на поступление будет от 4+' "
+                    "as split_payments=true. "
+                    "third_party_payments means the merchant allows or requires payment from "
+                    "a person/bank/card/account whose name is different from the account owner. "
+                    "When in doubt between safe and risky, choose risky with lower confidence. "
                     "Return only the requested JSON fields, without explanations. "
                     "Descriptions:\n"
                     f"{json.dumps(items, ensure_ascii=False)}"
@@ -263,11 +285,19 @@ def build_responses_payload(items: list[dict]) -> dict:
                                     "index": {"type": "integer"},
                                     "split_payments": {"type": "boolean"},
                                     "third_party_payments": {"type": "boolean"},
+                                    "confidence": {
+                                        "type": "number",
+                                        "minimum": 0,
+                                        "maximum": 1,
+                                    },
+                                    "reason": {"type": "string"},
                                 },
                                 "required": [
                                     "index",
                                     "split_payments",
                                     "third_party_payments",
+                                    "confidence",
+                                    "reason",
                                 ],
                             },
                         },
@@ -279,6 +309,10 @@ def build_responses_payload(items: list[dict]) -> dict:
     }
 
     tools = build_tools()
+    reasoning_effort = get_reasoning_effort()
+
+    if reasoning_effort:
+        payload["reasoning"] = {"effort": reasoning_effort}
 
     if tools:
         payload["tools"] = tools
@@ -309,6 +343,16 @@ def get_openai_model() -> str:
     return getattr(Config, "OPENAI_P2P_MODEL", DEFAULT_OPENAI_P2P_MODEL)
 
 
+def get_reasoning_effort() -> str:
+    value = getattr(Config, "OPENAI_P2P_REASONING_EFFORT", DEFAULT_OPENAI_P2P_REASONING_EFFORT)
+    normalized = str(value).strip().lower() if value else ""
+
+    if normalized in {"", "default", "none", "off", "false", "0"}:
+        return ""
+
+    return normalized
+
+
 def get_classifier_timeout() -> float:
     return getattr(
         Config,
@@ -319,16 +363,67 @@ def get_classifier_timeout() -> float:
 
 def get_classifier_batch_size() -> int:
     try:
-        return max(1, int(getattr(Config, "OPENAI_P2P_CLASSIFIER_BATCH_SIZE", 10)))
+        return max(
+            1,
+            int(
+                getattr(
+                    Config,
+                    "OPENAI_P2P_CLASSIFIER_BATCH_SIZE",
+                    DEFAULT_OPENAI_P2P_CLASSIFIER_BATCH_SIZE,
+                )
+            ),
+        )
     except (TypeError, ValueError):
-        return 10
+        return DEFAULT_OPENAI_P2P_CLASSIFIER_BATCH_SIZE
 
 
 def get_classifier_concurrency() -> int:
     try:
-        return max(1, int(getattr(Config, "OPENAI_P2P_CLASSIFIER_CONCURRENCY", 3)))
+        return max(
+            1,
+            int(
+                getattr(
+                    Config,
+                    "OPENAI_P2P_CLASSIFIER_CONCURRENCY",
+                    DEFAULT_OPENAI_P2P_CLASSIFIER_CONCURRENCY,
+                )
+            ),
+        )
     except (TypeError, ValueError):
-        return 3
+        return DEFAULT_OPENAI_P2P_CLASSIFIER_CONCURRENCY
+
+
+def should_use_single_batch() -> bool:
+    return bool(
+        getattr(
+            Config,
+            "OPENAI_P2P_CLASSIFIER_SINGLE_BATCH",
+            DEFAULT_OPENAI_P2P_CLASSIFIER_SINGLE_BATCH,
+        )
+    )
+
+
+def should_block_low_confidence() -> bool:
+    return bool(getattr(Config, "OPENAI_P2P_BLOCK_LOW_CONFIDENCE", True))
+
+
+def get_min_safe_confidence() -> float:
+    try:
+        return max(
+            0.0,
+            min(
+                1.0,
+                float(
+                    getattr(
+                        Config,
+                        "OPENAI_P2P_MIN_SAFE_CONFIDENCE",
+                        DEFAULT_OPENAI_P2P_MIN_SAFE_CONFIDENCE,
+                    )
+                ),
+            ),
+        )
+    except (TypeError, ValueError):
+        return DEFAULT_OPENAI_P2P_MIN_SAFE_CONFIDENCE
 
 
 def get_classifier_cache_ttl_seconds() -> float:

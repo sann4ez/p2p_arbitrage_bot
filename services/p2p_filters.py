@@ -208,6 +208,20 @@ SPLIT_PAYMENT_DENY_KEYWORDS = (
 
 SPLIT_PAYMENT_PATTERNS = (
     re.compile(
+        r"(?:плат[еёі]ж\w*|поступлен\w*|зачислен\w*)\D{0,80}"
+        r"(?:от|від)\s*\d+\+?",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"(?:от|від)\s*\d+\+?\D{0,40}"
+        r"(?:плат[еёі]ж\w*|поступлен\w*|зачислен\w*)",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b\d+\+\s*(?:плат[еёі]ж\w*|поступлен\w*|зачислен\w*)",
+        re.IGNORECASE,
+    ),
+    re.compile(
         r"(?:плат[еі]ж\w*|переказ\w*|перевод\w*|транзакц\w*|"
         r"част\w*|сум\w*)\s+по\s+\d+(?:[.,]\d+)?",
         re.IGNORECASE,
@@ -225,6 +239,23 @@ SPLIT_PAYMENT_PATTERNS = (
     re.compile(
         r"\b(?:2|3|4|5|6|7|8|9|10)\s+"
         r"(?:плат[еі]ж\w*|переказ\w*|перевод\w*|транзакц\w*|payments?|transfers?)\b",
+        re.IGNORECASE,
+    ),
+)
+
+DESCRIPTION_PAYMENT_TIME_PATTERNS = (
+    re.compile(
+        r"(?:оплат\w*|поступлен\w*|зачислен\w*|закрыт\w*|закрит\w*|"
+        r"ожидан\w*|очікуван\w*|может\s+занять|може\s+зайняти|срок\s+оплат\w*)"
+        r"\D{0,80}(?:от|від)?\s*(\d+)\s*(?:до|-)\s*(\d+)\s*"
+        r"(час\w*|годин\w*|год\w*|минут\w*|мин\w*|хвилин\w*|хв\w*)",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"(?:оплат\w*|поступлен\w*|зачислен\w*|закрыт\w*|закрит\w*|"
+        r"ожидан\w*|очікуван\w*|срок\s+оплат\w*)"
+        r"\D{0,80}(?:до|up\s+to)\s*(\d+)\s*"
+        r"(час\w*|годин\w*|год\w*|минут\w*|мин\w*|хвилин\w*|хв\w*)",
         re.IGNORECASE,
     ),
 )
@@ -742,7 +773,10 @@ def get_binance_order_metrics(order: dict) -> dict:
     )
 
     return {
-        "minutes": parse_int(adv.get("payTimeLimit")),
+        "minutes": max_known_minutes(
+            parse_int(adv.get("payTimeLimit")),
+            parse_description_payment_minutes(description),
+        ),
         "trades": parse_int(
             advertiser.get("monthOrderCount") or advertiser.get("orderCount")
         ),
@@ -759,7 +793,10 @@ def get_okx_order_metrics(order: dict) -> dict:
     description = normalize_order_description(*get_okx_order_description_values(order))
 
     return {
-        "minutes": parse_int(order.get("paymentTimeoutMinutes")),
+        "minutes": max_known_minutes(
+            parse_int(order.get("paymentTimeoutMinutes")),
+            parse_description_payment_minutes(description),
+        ),
         "trades": parse_int(order.get("completedOrderQuantity")),
         "rating": parse_percent(order.get("posReviewPercentage"))
         or parse_percent(order.get("completedRate")),
@@ -930,13 +967,61 @@ def has_split_payment_terms(description: str | None) -> bool:
     if not text:
         return False
 
+    if any(pattern.search(text) for pattern in SPLIT_PAYMENT_PATTERNS):
+        return True
+
     if contains_any(text, SPLIT_PAYMENT_DENY_KEYWORDS):
         return False
 
     if contains_any(text, SPLIT_PAYMENT_KEYWORDS):
         return True
 
-    return any(pattern.search(text) for pattern in SPLIT_PAYMENT_PATTERNS)
+    return False
+
+
+def parse_description_payment_minutes(description: str | None) -> int | None:
+    text = normalize_search_text(description)
+
+    if not text:
+        return None
+
+    values = []
+
+    for pattern in DESCRIPTION_PAYMENT_TIME_PATTERNS:
+        for match in pattern.finditer(text):
+            groups = match.groups()
+
+            if len(groups) == 3:
+                raw_value, unit = groups[1], groups[2]
+            else:
+                raw_value, unit = groups[0], groups[1]
+
+            minutes = parse_duration_to_minutes(raw_value, unit)
+
+            if minutes is not None:
+                values.append(minutes)
+
+    return max(values) if values else None
+
+
+def parse_duration_to_minutes(value, unit: str) -> int | None:
+    amount = parse_int(value)
+
+    if amount is None:
+        return None
+
+    normalized_unit = normalize_search_text(unit)
+
+    if any(token in normalized_unit for token in ("час", "год", "hour")):
+        return amount * 60
+
+    return amount
+
+
+def max_known_minutes(*values: int | None) -> int | None:
+    known_values = [value for value in values if value is not None]
+
+    return max(known_values) if known_values else None
 
 
 def parse_int(value) -> int | None:

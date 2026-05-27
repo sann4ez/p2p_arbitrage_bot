@@ -43,16 +43,32 @@ class Config:
     P2P_LOG_DESCRIPTION_SNIPPETS = parse_bool(os.getenv("P2P_LOG_DESCRIPTION_SNIPPETS"))
     TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
     OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
-    OPENAI_P2P_MODEL = os.getenv("OPENAI_P2P_MODEL", "gpt-5-nano")
-    OPENAI_P2P_CLASSIFIER_TIMEOUT = float(os.getenv("OPENAI_P2P_CLASSIFIER_TIMEOUT", "20"))
+    OPENAI_P2P_MODEL = os.getenv("OPENAI_P2P_MODEL", "gpt-5.5")
+    OPENAI_P2P_REASONING_EFFORT = os.getenv("OPENAI_P2P_REASONING_EFFORT", "high")
+    OPENAI_P2P_CLASSIFIER_TIMEOUT = float(os.getenv("OPENAI_P2P_CLASSIFIER_TIMEOUT", "180"))
     OPENAI_P2P_CLASSIFIER_BATCH_SIZE = int(
-        os.getenv("OPENAI_P2P_CLASSIFIER_BATCH_SIZE", "10")
+        os.getenv("OPENAI_P2P_CLASSIFIER_BATCH_SIZE", "5")
     )
     OPENAI_P2P_CLASSIFIER_CONCURRENCY = int(
-        os.getenv("OPENAI_P2P_CLASSIFIER_CONCURRENCY", "3")
+        os.getenv("OPENAI_P2P_CLASSIFIER_CONCURRENCY", "1")
+    )
+    OPENAI_P2P_CLASSIFIER_SINGLE_BATCH = parse_bool(
+        os.getenv("OPENAI_P2P_CLASSIFIER_SINGLE_BATCH"),
+        True,
+    )
+    OPENAI_P2P_BLOCK_LOW_CONFIDENCE = parse_bool(
+        os.getenv("OPENAI_P2P_BLOCK_LOW_CONFIDENCE"),
+        True,
+    )
+    OPENAI_P2P_MIN_SAFE_CONFIDENCE = float(
+        os.getenv("OPENAI_P2P_MIN_SAFE_CONFIDENCE", "0.75")
     )
     OPENAI_P2P_CLASSIFICATION_CACHE_TTL_SECONDS = float(
         os.getenv("OPENAI_P2P_CLASSIFICATION_CACHE_TTL_SECONDS", "600")
+    )
+    P2P_DESCRIPTION_PROGRESSIVE_FILTERING = parse_bool(
+        os.getenv("P2P_DESCRIPTION_PROGRESSIVE_FILTERING"),
+        False,
     )
     OPENAI_VECTOR_STORE_IDS = parse_env_list(
         os.getenv("OPENAI_VECTOR_STORE_IDS") or os.getenv("OPENAI_VECTOR_STORE_ID")
