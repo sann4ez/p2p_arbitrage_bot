@@ -22,11 +22,18 @@ DEFAULT_OPENAI_P2P_CLASSIFIER_SINGLE_BATCH = True
 DEFAULT_OPENAI_FILE_SEARCH_MAX_RESULTS = 3
 MAX_DESCRIPTION_CHARS = 2000
 P2P_CLASSIFIER_INSTRUCTIONS = (
+    "Classify three P2P description risks: split payments, third-party payments, "
+    "and Monobank jar/banka payments. Set monobank_jar_payments=true only when "
+    "the merchant asks for payment through a Monobank jar/banka, a Monobank "
+    "savings jar link, or instructions like 'Nakapychennia -> Banka', "
+    "'Banka po ssylke', or 'send/share/copy the banka link'. "
     "Ти вузькоспеціалізований класифікатор умов P2P-ордерів для криптообміну. "
-    "Твоя роль: визначати з опису мерчанта тільки два ризики: "
+    "Твоя роль: визначати з опису мерчанта три ризики: "
     "1) чи дозволяється або вимагається оплата кількома платежами/переказами; "
     "2) чи дозволяється або вимагається оплата від третьої особи, тобто відправник "
-    "може мати інше ім'я, ніж власник акаунта. "
+    "може мати інше ім'я, ніж власник акаунта; "
+    "3) чи потрібно платити через Monobank «банку», посилання на банку або інструкції "
+    "з розділу «Накопичення» -> «Банка». "
     "Поверни true лише коли це явно дозволено або явно вимагається. "
     "Для split_payments вважай явними фрази на кшталт 'платежей на поступление будет от 4+', "
     "'по 300 грн', 'оплата частями', 'несколько переводов'. "
@@ -249,6 +256,9 @@ def build_responses_payload(items: list[dict]) -> dict:
                     "as split_payments=true. "
                     "third_party_payments means the merchant allows or requires payment from "
                     "a person/bank/card/account whose name is different from the account owner. "
+                    "monobank_jar_payments means the merchant asks for payment through a "
+                    "Monobank jar/banka or a jar link, including Monobank savings jar "
+                    "instructions. "
                     "Return only the requested JSON fields, without explanations. "
                     "Descriptions:\n"
                     f"{json.dumps(items, ensure_ascii=False)}"
@@ -273,11 +283,13 @@ def build_responses_payload(items: list[dict]) -> dict:
                                     "index": {"type": "integer"},
                                     "split_payments": {"type": "boolean"},
                                     "third_party_payments": {"type": "boolean"},
+                                    "monobank_jar_payments": {"type": "boolean"},
                                 },
                                 "required": [
                                     "index",
                                     "split_payments",
                                     "third_party_payments",
+                                    "monobank_jar_payments",
                                 ],
                             },
                         },
@@ -426,6 +438,7 @@ def parse_classification_response(data: dict) -> dict[int, P2PDescriptionClassif
         classifications[index] = P2PDescriptionClassification(
             split_payments=bool(item.get("split_payments")),
             third_party_payments=bool(item.get("third_party_payments")),
+            monobank_jar_payments=bool(item.get("monobank_jar_payments")),
             confidence=parse_confidence(item.get("confidence")),
             reason=str(item.get("reason") or ""),
         )

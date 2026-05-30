@@ -49,6 +49,7 @@ BTN_FILTER_PERSON_PREFIX = "👤 Фізособа/карта:"
 BTN_FILTER_OTHER_PREFIX = "🌐 Інші методи:"
 BTN_FILTER_THIRD_PARTY_PREFIX = "🧾 Треті особи:"
 BTN_FILTER_SPLIT_PAYMENTS_PREFIX = "🧩 Кілька платежів:"
+BTN_FILTER_MONOBANK_JAR_PREFIX = "🫙 Monobank Банка:"
 
 CB_FILTERS_MENU = "p2pf:menu"
 CB_FILTERS_RESET = "p2pf:reset"
@@ -65,6 +66,7 @@ FILTER_SCREEN_MIN_COMPLETION = "completion"
 FILTER_SCREEN_PAYMENT_METHODS = "pay_methods"
 FILTER_SCREEN_THIRD_PARTY = "third_party"
 FILTER_SCREEN_SPLIT_PAYMENTS = "split"
+FILTER_SCREEN_MONOBANK_JAR = "mono_jar"
 FILTER_SCREEN_DESCRIPTION_CHECK = "desc"
 FILTER_SCREEN_DISPLAY_COUNT = "display"
 FILTER_SCREEN_CANDIDATE_COUNT = "candidates"
@@ -268,6 +270,12 @@ def p2p_filters_kb(settings):
                 ),
             ],
             [
+                KeyboardButton(
+                    text=f"{BTN_FILTER_MONOBANK_JAR_PREFIX} "
+                    f"{format_allowed_toggle(settings.allow_monobank_jar_payments)}"
+                ),
+            ],
+            [
                 KeyboardButton(text=BTN_RESET_FILTERS),
                 KeyboardButton(text=BTN_BACK),
             ],
@@ -315,6 +323,12 @@ def p2p_filters_inline_kb(settings):
                 InlineKeyboardButton(
                     text=f"🧩 Кілька платежів: {format_allowed_toggle(settings.allow_split_payments)}",
                     callback_data=f"{CB_FILTERS_SCREEN_PREFIX}{FILTER_SCREEN_SPLIT_PAYMENTS}",
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text=f"🫙 Monobank Банка: {format_allowed_toggle(settings.allow_monobank_jar_payments)}",
+                    callback_data=f"{CB_FILTERS_SCREEN_PREFIX}{FILTER_SCREEN_MONOBANK_JAR}",
                 ),
             ],
             [
@@ -402,6 +416,9 @@ def p2p_filter_values_inline_kb(settings, screen: str):
 
     if screen == FILTER_SCREEN_SPLIT_PAYMENTS:
         return bool_inline_kb(screen, settings.allow_split_payments)
+
+    if screen == FILTER_SCREEN_MONOBANK_JAR:
+        return bool_inline_kb(screen, settings.allow_monobank_jar_payments)
 
     if screen == FILTER_SCREEN_PAYMENT_METHODS:
         return payment_methods_inline_kb(settings)

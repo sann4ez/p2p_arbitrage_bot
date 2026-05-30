@@ -69,7 +69,7 @@ async def send_binance_ads(
 
     fetch_rows = get_fetch_order_count(settings)
     logger.info(
-        "P2P Binance flow start: telegram_id=%s trade_type=%s fetch_rows=%s display_count=%s desc_mode=%s payment_categories=%s max_minutes=%s min_trades=%s min_rating=%s min_completion=%s allow_split=%s allow_third_party=%s",
+        "P2P Binance flow start: telegram_id=%s trade_type=%s fetch_rows=%s display_count=%s desc_mode=%s payment_categories=%s max_minutes=%s min_trades=%s min_rating=%s min_completion=%s allow_split=%s allow_third_party=%s allow_monobank_jar=%s",
         message.from_user.id,
         trade_type,
         fetch_rows,
@@ -82,6 +82,7 @@ async def send_binance_ads(
         settings.min_completion,
         settings.allow_split_payments,
         settings.allow_third_party_payments,
+        settings.allow_monobank_jar_payments,
     )
 
     ads = await get_cached_p2p_orders(

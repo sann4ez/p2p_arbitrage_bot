@@ -23,6 +23,7 @@ def needs_description_filtering(settings: P2PFilterSettings) -> bool:
     return (
         not settings.allow_third_party_payments
         or not settings.allow_split_payments
+        or not settings.allow_monobank_jar_payments
         or settings.payment_categories != PAYMENT_CATEGORIES
     )
 
@@ -35,12 +36,13 @@ async def filter_orders_by_description(
     mode = normalize_description_check_mode(settings.description_check_mode)
 
     logger.info(
-        "P2P description filter start: exchange=%s orders=%s mode=%s allow_split=%s allow_third_party=%s",
+        "P2P description filter start: exchange=%s orders=%s mode=%s allow_split=%s allow_third_party=%s allow_monobank_jar=%s",
         exchange,
         len(orders),
         mode,
         settings.allow_split_payments,
         settings.allow_third_party_payments,
+        settings.allow_monobank_jar_payments,
     )
 
     if not needs_description_filtering(settings):
@@ -132,7 +134,9 @@ async def filter_orders_by_description(
     filtered_orders = []
     blocked_split = 0
     blocked_third_party = 0
+    blocked_monobank_jar = 0
     blocked_both = 0
+    blocked_multiple_reasons = 0
     missing_classifications = 0
     missing_descriptions_blocked = 0
     regex_safety_blocked = 0
@@ -161,19 +165,34 @@ async def filter_orders_by_description(
         blocked_by_third_party = (
             not settings.allow_third_party_payments and classification.third_party_payments
         )
+        blocked_by_monobank_jar = (
+            not settings.allow_monobank_jar_payments
+            and classification.monobank_jar_payments
+        )
+        blocked_reasons_count = sum(
+            (
+                blocked_by_split,
+                blocked_by_third_party,
+                blocked_by_monobank_jar,
+            )
+        )
 
-        if blocked_by_split and blocked_by_third_party:
-            blocked_both += 1
+        if blocked_reasons_count > 1:
+            blocked_multiple_reasons += 1
+            if blocked_by_split and blocked_by_third_party and not blocked_by_monobank_jar:
+                blocked_both += 1
         elif blocked_by_split:
             blocked_split += 1
         elif blocked_by_third_party:
             blocked_third_party += 1
+        elif blocked_by_monobank_jar:
+            blocked_monobank_jar += 1
 
-        if not blocked_by_split and not blocked_by_third_party:
+        if blocked_reasons_count == 0:
             filtered_orders.append(order)
 
     logger.info(
-        "P2P description filter GPT result: exchange=%s input=%s output=%s classifications=%s missing=%s missing_descriptions_blocked=%s blocked_split=%s blocked_third_party=%s blocked_both=%s regex_safety_blocked=%s",
+        "P2P description filter GPT result: exchange=%s input=%s output=%s classifications=%s missing=%s missing_descriptions_blocked=%s blocked_split=%s blocked_third_party=%s blocked_monobank_jar=%s blocked_both=%s blocked_multiple_reasons=%s regex_safety_blocked=%s",
         exchange,
         len(gpt_orders),
         len(filtered_orders),
@@ -182,7 +201,9 @@ async def filter_orders_by_description(
         missing_descriptions_blocked,
         blocked_split,
         blocked_third_party,
+        blocked_monobank_jar,
         blocked_both,
+        blocked_multiple_reasons,
         regex_safety_blocked,
     )
 
@@ -243,11 +264,18 @@ def get_description_filter_batch_size(limit: int) -> int:
         max(MIN_DESCRIPTION_FILTER_BATCH_SIZE, limit * 2),
     )
 
+
 def order_matches_gpt_classification(classification, settings: P2PFilterSettings) -> bool:
     if not settings.allow_third_party_payments and classification.third_party_payments:
         return False
 
     if not settings.allow_split_payments and classification.split_payments:
+        return False
+
+    if (
+        not settings.allow_monobank_jar_payments
+        and classification.monobank_jar_payments
+    ):
         return False
 
     return True
@@ -268,6 +296,12 @@ def order_matches_regex_description(
         return False
 
     if not settings.allow_split_payments and metrics["split_payments"]:
+        return False
+
+    if (
+        not settings.allow_monobank_jar_payments
+        and metrics["monobank_jar_payments"]
+    ):
         return False
 
     return True
