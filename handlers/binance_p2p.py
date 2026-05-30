@@ -20,6 +20,7 @@ from services.p2p_description_filter import (
 from services.p2p_order_formatter import (
     attach_binance_details,
     build_binance_order_blocks,
+    build_binance_order_urls,
     count_binance_descriptions,
 )
 from services.p2p_request_guard import (
@@ -183,6 +184,12 @@ async def send_binance_ads(
         count_binance_descriptions(ads),
     )
     blocks = build_binance_order_blocks(ads)
+    order_urls = build_binance_order_urls(ads)
 
     logger.info("P2P Binance sending paginated message: blocks=%s", len(blocks))
-    await send_paginated_html_blocks(message, title=title, blocks=blocks)
+    await send_paginated_html_blocks(
+        message,
+        title=title,
+        blocks=blocks,
+        order_urls=order_urls,
+    )

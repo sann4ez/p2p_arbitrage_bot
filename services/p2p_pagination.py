@@ -26,6 +26,7 @@ class P2PPaginationSession:
     owner_telegram_id: int
     title: str
     page_groups: list[list[str]]
+    page_url_groups: list[list[str | None]]
     page_starts: list[int]
     total_orders: int
     expires_at: float
@@ -39,14 +40,16 @@ def create_pagination_session(
     owner_telegram_id: int,
     title: str,
     blocks: list[str],
+    order_urls: list[str | None] | None = None,
     page_size: int | None = None,
 ) -> str:
     cleanup_expired_sessions()
     effective_page_size = page_size or get_orders_per_page()
 
-    page_groups = build_page_groups(
+    page_groups, page_url_groups = build_page_groups(
         title=title,
         blocks=blocks,
+        order_urls=order_urls,
         page_size=effective_page_size,
     )
     session_id = secrets.token_urlsafe(8)
@@ -56,6 +59,7 @@ def create_pagination_session(
         owner_telegram_id=owner_telegram_id,
         title=title,
         page_groups=page_groups,
+        page_url_groups=page_url_groups,
         page_starts=build_page_starts(page_groups),
         total_orders=len(blocks),
         expires_at=time.monotonic() + ttl_seconds,
@@ -115,16 +119,20 @@ def build_page_groups(
     *,
     title: str,
     blocks: list[str],
+    order_urls: list[str | None] | None = None,
     page_size: int,
-) -> list[list[str]]:
+) -> tuple[list[list[str]], list[list[str | None]]]:
     if not blocks:
-        return [[]]
+        return [[]], [[]]
 
     page_size = max(1, page_size)
+    normalized_urls = normalize_order_urls(order_urls, len(blocks))
     groups = []
+    url_groups = []
     current_group: list[str] = []
+    current_url_group: list[str | None] = []
 
-    for block in blocks:
+    for block, order_url in zip(blocks, normalized_urls):
         candidate_group = [*current_group, block]
         candidate_text = format_page_text(
             title=title,
@@ -143,15 +151,31 @@ def build_page_groups(
             )
         ):
             groups.append(current_group)
+            url_groups.append(current_url_group)
             current_group = [block]
+            current_url_group = [order_url]
             continue
 
         current_group = candidate_group
+        current_url_group = [*current_url_group, order_url]
 
     if current_group:
         groups.append(current_group)
+        url_groups.append(current_url_group)
 
-    return groups or [[]]
+    return groups or [[]], url_groups or [[]]
+
+
+def normalize_order_urls(
+    order_urls: list[str | None] | None,
+    blocks_count: int,
+) -> list[str | None]:
+    urls = list(order_urls or [])
+
+    if len(urls) < blocks_count:
+        urls.extend([None] * (blocks_count - len(urls)))
+
+    return urls[:blocks_count]
 
 
 def build_page_starts(page_groups: list[list[str]]) -> list[int]:
@@ -172,6 +196,7 @@ def build_pagination_page(
 ) -> P2PPage:
     total_pages = len(session.page_groups)
     blocks = session.page_groups[page_index]
+    order_urls = session.page_url_groups[page_index]
     start_order = session.page_starts[page_index]
 
     return P2PPage(
@@ -183,7 +208,13 @@ def build_pagination_page(
             start_order=start_order,
             total_orders=session.total_orders,
         ),
-        reply_markup=build_pagination_keyboard(session_id, page_index, total_pages),
+        reply_markup=build_pagination_keyboard(
+            session_id,
+            page_index,
+            total_pages,
+            order_urls=order_urls,
+            start_order=start_order,
+        ),
     )
 
 
@@ -216,36 +247,82 @@ def build_pagination_keyboard(
     session_id: str,
     page_index: int,
     total_pages: int,
+    *,
+    order_urls: list[str | None],
+    start_order: int,
 ) -> InlineKeyboardMarkup | None:
-    if total_pages <= 1:
+    rows = build_order_url_rows(order_urls, start_order)
+
+    if total_pages > 1:
+        row = []
+
+        if page_index > 0:
+            row.append(
+                InlineKeyboardButton(
+                    text="⬅️",
+                    callback_data=build_page_callback(session_id, page_index - 1),
+                )
+            )
+
+        row.append(
+            InlineKeyboardButton(
+                text=f"{page_index + 1}/{total_pages}",
+                callback_data=CB_P2P_PAGE_NOOP,
+            )
+        )
+
+        if page_index < total_pages - 1:
+            row.append(
+                InlineKeyboardButton(
+                    text="➡️",
+                    callback_data=build_page_callback(session_id, page_index + 1),
+                )
+            )
+
+        rows.append(row)
+
+    if not rows:
         return None
 
-    row = []
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
-    if page_index > 0:
-        row.append(
-            InlineKeyboardButton(
-                text="⬅️",
-                callback_data=build_page_callback(session_id, page_index - 1),
-            )
+
+def build_order_url_rows(
+    order_urls: list[str | None],
+    start_order: int,
+) -> list[list[InlineKeyboardButton]]:
+    valid_urls = [
+        (index, order_url)
+        for index, order_url in enumerate(order_urls, start=start_order)
+        if is_supported_url(order_url)
+    ]
+
+    if not valid_urls:
+        return []
+
+    rows = []
+    show_numbers = len(valid_urls) > 1
+
+    for order_number, order_url in valid_urls:
+        text = "🔗 Відкрити ордер"
+
+        if show_numbers:
+            text = f"{text} {order_number}"
+
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text=text,
+                    url=order_url,
+                )
+            ]
         )
 
-    row.append(
-        InlineKeyboardButton(
-            text=f"{page_index + 1}/{total_pages}",
-            callback_data=CB_P2P_PAGE_NOOP,
-        )
-    )
+    return rows
 
-    if page_index < total_pages - 1:
-        row.append(
-            InlineKeyboardButton(
-                text="➡️",
-                callback_data=build_page_callback(session_id, page_index + 1),
-            )
-        )
 
-    return InlineKeyboardMarkup(inline_keyboard=[row])
+def is_supported_url(url: str | None) -> bool:
+    return bool(url and url.startswith(("https://", "http://")))
 
 
 def parse_page_callback(callback_data: str) -> tuple[str, int] | None:
