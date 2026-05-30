@@ -37,6 +37,7 @@ async def send_paginated_html_blocks(
     *,
     title: str,
     blocks: list[str],
+    order_urls: list[str | None] | None = None,
     page_size: int | None = None,
 ):
     telegram_id = message.from_user.id if message.from_user else 0
@@ -44,6 +45,7 @@ async def send_paginated_html_blocks(
         owner_telegram_id=telegram_id,
         title=title,
         blocks=blocks,
+        order_urls=order_urls,
         page_size=page_size,
     )
     page = get_pagination_page(

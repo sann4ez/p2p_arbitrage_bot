@@ -21,6 +21,7 @@ from services.p2p_description_filter import (
 from services.p2p_order_formatter import (
     attach_okx_details,
     build_okx_order_blocks,
+    build_okx_order_urls,
     count_okx_descriptions,
 )
 from services.p2p_request_guard import (
@@ -177,6 +178,12 @@ async def send_okx_ads(
         count_okx_descriptions(ads),
     )
     blocks = build_okx_order_blocks(ads, side)
+    order_urls = build_okx_order_urls(ads, side)
 
     logger.info("P2P OKX sending paginated message: blocks=%s", len(blocks))
-    await send_paginated_html_blocks(message, title=title, blocks=blocks)
+    await send_paginated_html_blocks(
+        message,
+        title=title,
+        blocks=blocks,
+        order_urls=order_urls,
+    )

@@ -20,8 +20,16 @@ def build_binance_order_blocks(ads: list[dict]) -> list[str]:
     return [format_order_message(build_binance_order_message(ad)) for ad in ads]
 
 
+def build_binance_order_urls(ads: list[dict]) -> list[str | None]:
+    return [build_binance_order_url(ad) for ad in ads]
+
+
 def build_okx_order_blocks(ads: list[dict], side: str) -> list[str]:
     return [format_order_message(build_okx_order_message(ad, side)) for ad in ads]
+
+
+def build_okx_order_urls(ads: list[dict], side: str) -> list[str | None]:
+    return [build_okx_order_url(ad, side) for ad in ads]
 
 
 def build_binance_order_message(ad: dict) -> P2POrderMessage:
@@ -102,11 +110,6 @@ def format_order_message(order: P2POrderMessage) -> str:
     lines.append(
         f"📝 Опис: {escape(order.description) if order.description else 'не вказано'}"
     )
-
-    if order.order_url:
-        lines.append(
-            f'🔗 Ордер: <a href="{escape(order.order_url, quote=True)}">відкрити</a>'
-        )
 
     return "\n".join(lines)
 
