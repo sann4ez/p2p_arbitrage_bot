@@ -46,6 +46,11 @@ class UserSettings(Base):
         default=True,
         server_default="true",
     )
+    allow_monobank_jar_payments: Mapped[bool] = mapped_column(
+        Boolean,
+        default=True,
+        server_default="true",
+    )
     display_order_count: Mapped[int] = mapped_column(
         Integer,
         default=5,

@@ -40,6 +40,7 @@ class P2PFilterSettings:
     payment_categories: set[str] = field(default_factory=lambda: set(PAYMENT_CATEGORIES))
     allow_third_party_payments: bool = True
     allow_split_payments: bool = True
+    allow_monobank_jar_payments: bool = True
     display_order_count: int = DEFAULT_DISPLAY_ORDER_COUNT
     candidate_order_count: int = DEFAULT_CANDIDATE_ORDER_COUNT
     description_check_mode: str = DESCRIPTION_CHECK_REGEX
@@ -49,6 +50,7 @@ class P2PFilterSettings:
 class P2PDescriptionClassification:
     split_payments: bool = False
     third_party_payments: bool = False
+    monobank_jar_payments: bool = False
     confidence: float = 0.0
     reason: str = ""
 

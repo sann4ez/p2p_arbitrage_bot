@@ -4,6 +4,7 @@ import time
 
 import aiohttp
 
+from config import Config
 from services.okx_order_payload import flatten_okx_detail
 
 logger = logging.getLogger(__name__)
@@ -146,19 +147,13 @@ async def _fetch_okx_p2p_detail(
     last_body = ""
 
     for referer in referers:
-        headers = {
-            "Origin": "https://www.okx.com",
-            "Referer": referer,
-            "Sec-Fetch-Dest": "empty",
-            "Sec-Fetch-Mode": "cors",
-            "Sec-Fetch-Site": "same-origin",
-            "X-Requested-With": "XMLHttpRequest",
-        }
+        request_timestamp = int(time.time() * 1000)
+        headers = build_okx_detail_headers(referer, request_timestamp)
 
         try:
             async with session.get(
                 OKX_P2P_DETAIL_URL.format(order_id=order_id),
-                params={"t": int(time.time() * 1000)},
+                params={"t": request_timestamp},
                 headers=headers,
             ) as response:
                 last_status = response.status
@@ -191,6 +186,25 @@ async def _fetch_okx_p2p_detail(
     )
 
     return order_id, {}
+
+
+def build_okx_detail_headers(referer: str, request_timestamp: int) -> dict[str, str]:
+    headers = {
+        "Origin": "https://www.okx.com",
+        "Referer": referer,
+        "Sec-Fetch-Dest": "empty",
+        "Sec-Fetch-Mode": "cors",
+        "Sec-Fetch-Site": "same-origin",
+        "X-Requested-With": "XMLHttpRequest",
+        "X-Request-Timestamp": str(request_timestamp),
+    }
+
+    authorization = Config.OKX_AUTHORIZATION.strip()
+
+    if authorization:
+        headers["Authorization"] = authorization
+
+    return headers
 
 
 def get_okx_detail_referers(order_id: str, side: str | None = None) -> list[str]:

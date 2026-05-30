@@ -25,6 +25,14 @@ async def add_p2p_filter_columns():
             text(
                 """
                 ALTER TABLE user_settings
+                ADD COLUMN IF NOT EXISTS allow_monobank_jar_payments BOOLEAN NOT NULL DEFAULT TRUE
+                """
+            )
+        )
+        await conn.execute(
+            text(
+                """
+                ALTER TABLE user_settings
                 ADD COLUMN IF NOT EXISTS display_order_count INTEGER NOT NULL DEFAULT 5
                 """
             )

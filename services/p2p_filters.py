@@ -304,6 +304,69 @@ SPLIT_PAYMENT_PATTERNS = (
     ),
 )
 
+MONOBANK_JAR_PATTERNS = (
+    re.compile(
+        "(?<!\\w)(?:mono|monobank|\\u043c\\u043e\\u043d\\u043e|"
+        "\\u043c\\u043e\\u043d\\u043e\\u0431\\u0430\\u043d\\u043a)(?!\\w).{0,80}"
+        "(?:\\u0431\\u0430\\u043d\\u043a\\u0430|"
+        "\\u0431\\u0430\\u043d\\u043a\\u0443|"
+        "\\u0431\\u0430\\u043d\\u043a\\u043e\\u044e|"
+        "\\u0431\\u0430\\u043d\\u043a\\u0435|jar)",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        "(?:\\u0431\\u0430\\u043d\\u043a\\u0430|"
+        "\\u0431\\u0430\\u043d\\u043a\\u0443|"
+        "\\u0431\\u0430\\u043d\\u043a\\u043e\\u044e|"
+        "\\u0431\\u0430\\u043d\\u043a\\u0435|jar).{0,80}"
+        "(?<!\\w)(?:mono|monobank|\\u043c\\u043e\\u043d\\u043e|"
+        "\\u043c\\u043e\\u043d\\u043e\\u0431\\u0430\\u043d\\u043a)(?!\\w)",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        "(?:\\u043f\\u043e\\u0441\\u0438\\u043b\\u0430\\u043d\\u043d\\u044f|"
+        "\\u043f\\u043e\\u0441\\u0438\\u043b\\u043b\\u0430\\u043d\\u043d\\u044f|"
+        "\\u0441\\u0441\\u044b\\u043b\\u043a\\w*|link).{0,50}"
+        "(?:\\u0431\\u0430\\u043d\\u043a\\u0430|"
+        "\\u0431\\u0430\\u043d\\u043a\\u0443|"
+        "\\u0431\\u0430\\u043d\\u043a\\u043e\\u044e|"
+        "\\u0431\\u0430\\u043d\\u043a\\u0435)",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        "(?:\\u0431\\u0430\\u043d\\u043a\\u0430|"
+        "\\u0431\\u0430\\u043d\\u043a\\u0443|"
+        "\\u0431\\u0430\\u043d\\u043a\\u043e\\u044e|"
+        "\\u0431\\u0430\\u043d\\u043a\\u0435).{0,50}"
+        "(?:\\u043f\\u043e\\u0441\\u0438\\u043b\\u0430\\u043d\\u043d\\u044f|"
+        "\\u043f\\u043e\\u0441\\u0438\\u043b\\u043b\\u0430\\u043d\\u043d\\u044f|"
+        "\\u0441\\u0441\\u044b\\u043b\\u043a\\w*|link)",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        "(?:\\u043f\\u043e\\u0434\\u0456\\u043b\\u0438\\u0442\\w*|"
+        "\\u043f\\u043e\\u0434\\u0435\\u043b\\u0438\\u0442\\w*|"
+        "\\u0441\\u043a\\u043e\\u043f\\u0456\\u044e\\w*|"
+        "\\u0441\\u043a\\u043e\\u043f\\u0438\\u0440\\w*|"
+        "\\u043d\\u0430\\u0434\\u0456\\u0448\\u043b\\w*|"
+        "\\u043e\\u0442\\u043f\\u0440\\u0430\\u0432\\w*).{0,80}"
+        "(?:\\u0431\\u0430\\u043d\\u043a\\u0430|"
+        "\\u0431\\u0430\\u043d\\u043a\\u0443|"
+        "\\u0431\\u0430\\u043d\\u043a\\u043e\\u044e|"
+        "\\u0431\\u0430\\u043d\\u043a\\u0435)",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        "(?:\\u043d\\u0430\\u043a\\u043e\\u043f\\u0438\\u0447\\u0435\\u043d\\u043d\\u044f|"
+        "\\u043d\\u0430\\u043a\\u043e\\u043f\\u043b\\u0435\\u043d\\u0438\\u044f).{0,80}"
+        "(?:\\u0431\\u0430\\u043d\\u043a\\u0430|"
+        "\\u0431\\u0430\\u043d\\u043a\\u0443|"
+        "\\u0431\\u0430\\u043d\\u043a\\u043e\\u044e|"
+        "\\u0431\\u0430\\u043d\\u043a\\u0435)",
+        re.IGNORECASE,
+    ),
+)
+
 DESCRIPTION_PAYMENT_TIME_PATTERNS = (
     re.compile(
         r"(?:оплат\w*|поступлен\w*|зачислен\w*|закрыт\w*|закрит\w*|"
@@ -607,6 +670,22 @@ async def set_split_payments(
     return settings_from_model(user_settings)
 
 
+async def set_monobank_jar_payments(
+    session: AsyncSession,
+    telegram_id: int,
+    is_allowed: bool,
+) -> P2PFilterSettings:
+    user_settings = await get_user_settings(session, telegram_id)
+
+    if not user_settings:
+        return P2PFilterSettings()
+
+    user_settings.allow_monobank_jar_payments = is_allowed
+    await session.commit()
+
+    return settings_from_model(user_settings)
+
+
 async def toggle_payment_category(
     session: AsyncSession,
     telegram_id: int,
@@ -663,6 +742,23 @@ async def toggle_split_payments(
     return settings_from_model(user_settings)
 
 
+async def toggle_monobank_jar_payments(
+    session: AsyncSession,
+    telegram_id: int,
+) -> P2PFilterSettings:
+    user_settings = await get_user_settings(session, telegram_id)
+
+    if not user_settings:
+        return P2PFilterSettings()
+
+    user_settings.allow_monobank_jar_payments = (
+        not user_settings.allow_monobank_jar_payments
+    )
+    await session.commit()
+
+    return settings_from_model(user_settings)
+
+
 async def get_user_settings(session: AsyncSession, telegram_id: int) -> UserSettings | None:
     repo = UserRepository(session)
     user = await repo.get_by_telegram_id(telegram_id)
@@ -682,6 +778,7 @@ def settings_from_model(user_settings: UserSettings) -> P2PFilterSettings:
         payment_categories=payment_categories_from_model(user_settings),
         allow_third_party_payments=user_settings.allow_third_party_payments,
         allow_split_payments=user_settings.allow_split_payments,
+        allow_monobank_jar_payments=user_settings.allow_monobank_jar_payments,
         display_order_count=normalize_display_order_count(user_settings.display_order_count),
         candidate_order_count=normalize_candidate_order_count(
             user_settings.candidate_order_count
@@ -702,6 +799,7 @@ def apply_settings_to_model(
     user_settings.min_merchant_completion_rate = decimal_or_none(settings.min_completion)
     user_settings.allow_third_party_payments = settings.allow_third_party_payments
     user_settings.allow_split_payments = settings.allow_split_payments
+    user_settings.allow_monobank_jar_payments = settings.allow_monobank_jar_payments
     user_settings.display_order_count = normalize_display_order_count(
         settings.display_order_count
     )
@@ -850,6 +948,7 @@ def get_binance_order_metrics(order: dict) -> dict:
         "payment_categories": categorize_payment_methods(payment_names, description),
         "third_party_payments": has_third_party_payment_terms(description),
         "split_payments": has_split_payment_terms(description),
+        "monobank_jar_payments": has_monobank_jar_terms(description),
     }
 
 
@@ -869,6 +968,7 @@ def get_okx_order_metrics(order: dict) -> dict:
         "payment_categories": categorize_payment_methods(payment_names, description),
         "third_party_payments": has_third_party_payment_terms(description),
         "split_payments": has_split_payment_terms(description),
+        "monobank_jar_payments": has_monobank_jar_terms(description),
     }
 
 
@@ -925,6 +1025,12 @@ def order_matches(
             return False
 
         if not settings.allow_split_payments and metrics["split_payments"]:
+            return False
+
+        if (
+            not settings.allow_monobank_jar_payments
+            and metrics["monobank_jar_payments"]
+        ):
             return False
 
     if apply_payment_filters:
@@ -1054,6 +1160,15 @@ def has_split_payment_terms(description: str | None) -> bool:
     return False
 
 
+def has_monobank_jar_terms(description: str | None) -> bool:
+    text = normalize_search_text(description)
+
+    if not text:
+        return False
+
+    return any(pattern.search(text) for pattern in MONOBANK_JAR_PATTERNS)
+
+
 def parse_description_payment_minutes(description: str | None) -> int | None:
     text = normalize_search_text(description)
 
@@ -1133,6 +1248,7 @@ def filters_summary(settings: P2PFilterSettings) -> str:
         f"Методи: {format_payment_categories(settings.payment_categories)}",
         f"Оплата від 3-х осіб: {format_allowed(settings.allow_third_party_payments)}",
         f"Кілька платежів: {format_allowed(settings.allow_split_payments)}",
+        f"Monobank Банка: {format_allowed(settings.allow_monobank_jar_payments)}",
         f"Перевірка опису: {format_description_check_mode(settings.description_check_mode)}",
         f"Виводити ордерів: {settings.display_order_count}",
         f"Перевіряти кандидатів: {format_candidate_order_count(settings)}",

@@ -23,6 +23,7 @@ from keyboards.menu import (
     BTN_FILTER_MIN_COMPLETION_PREFIX,
     BTN_FILTER_MIN_RATING_PREFIX,
     BTN_FILTER_MIN_TRADES_PREFIX,
+    BTN_FILTER_MONOBANK_JAR_PREFIX,
     BTN_FILTER_ORDER_TIME_PREFIX,
     BTN_FILTER_OTHER_PREFIX,
     BTN_FILTER_PERSON_PREFIX,
@@ -38,6 +39,7 @@ from keyboards.menu import (
     FILTER_SCREEN_MIN_COMPLETION,
     FILTER_SCREEN_MIN_RATING,
     FILTER_SCREEN_MIN_TRADES,
+    FILTER_SCREEN_MONOBANK_JAR,
     FILTER_SCREEN_ORDER_TIME,
     FILTER_SCREEN_PAYMENT_METHODS,
     FILTER_SCREEN_SPLIT_PAYMENTS,
@@ -66,12 +68,14 @@ from services.p2p_filters import (
     set_description_check_mode,
     set_display_order_count,
     set_min_completion,
+    set_monobank_jar_payments,
     set_min_rating,
     set_min_trades,
     set_order_minutes,
     set_split_payments,
     set_third_party_payments,
     toggle_split_payments,
+    toggle_monobank_jar_payments,
     toggle_payment_category,
     toggle_third_party_payments,
 )
@@ -107,6 +111,10 @@ FILTER_SCREEN_TEXTS = {
     FILTER_SCREEN_SPLIT_PAYMENTS: (
         "Кілька платежів",
         "Якщо заборонити, бот прибере ордери, де в описі дозволено або просять платити частинами.",
+    ),
+    FILTER_SCREEN_MONOBANK_JAR: (
+        "Monobank Банка",
+        "Якщо заборонити, бот прибере ордери, де в описі просять оплату через Monobank «банку» або посилання на банку.",
     ),
     FILTER_SCREEN_DESCRIPTION_CHECK: (
         "Перевірка опису",
@@ -315,6 +323,14 @@ async def toggle_split_payments_filter(message: types.Message):
     await send_filters_menu(message)
 
 
+@router.message(StateFilter(AppMenu.p2p_filters), F.text.startswith(BTN_FILTER_MONOBANK_JAR_PREFIX))
+async def toggle_monobank_jar_filter(message: types.Message):
+    async with AsyncSessionLocal() as session:
+        await toggle_monobank_jar_payments(session, message.from_user.id)
+
+    await send_filters_menu(message)
+
+
 @router.message(StateFilter(AppMenu.p2p_filters), F.text == BTN_RESET_FILTERS)
 async def reset_p2p_filters(message: types.Message):
     async with AsyncSessionLocal() as session:
@@ -501,6 +517,9 @@ async def apply_filter_value(session, telegram_id: int, field: str, raw_value: s
 
     if field == FILTER_SCREEN_SPLIT_PAYMENTS:
         return await set_split_payments(session, telegram_id, raw_value == "1")
+
+    if field == FILTER_SCREEN_MONOBANK_JAR:
+        return await set_monobank_jar_payments(session, telegram_id, raw_value == "1")
 
     return await get_filters(session, telegram_id)
 
