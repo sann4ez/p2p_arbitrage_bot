@@ -124,6 +124,26 @@ PERSON_PAYMENT_KEYWORDS = (
     "toyota bank",
 )
 
+PERSON_PAYMENT_DESCRIPTION_KEYWORDS = (
+    "особистої картки",
+    "особистої карти",
+    "особиста картка",
+    "особиста карта",
+    "власної картки",
+    "власної карти",
+    "власна картка",
+    "власна карта",
+    "своєї картки",
+    "своєї карти",
+    "личной карты",
+    "личной карточки",
+    "личная карта",
+    "своей карты",
+    "своей карточки",
+    "own card",
+    "personal card",
+)
+
 THIRD_PARTY_PAYMENT_KEYWORDS = (
     "від третіх осіб",
     "від третіх лиць",
@@ -207,8 +227,12 @@ THIRD_PARTY_DENY_KEYWORDS = (
     "только от своего имени",
     "тільки зі своєї карти",
     "только со своей карты",
+    "тільки з особистої картки",
+    "тільки з особистої карти",
+    "только с личной карты",
     "only from your own",
     "only own card",
+    "only personal card",
     "no third party",
     "no 3rd party",
     "do not accept third",
@@ -412,7 +436,8 @@ DESCRIPTION_PAYMENT_TIME_PATTERNS = (
     re.compile(
         r"(?:оплат\w*|поступлен\w*|зачислен\w*|закрыт\w*|закрит\w*|"
         r"ожидан\w*|очікуван\w*|может\s+занять|може\s+зайняти|срок\s+оплат\w*|"
-        r"час\s+виконан\w*|термін\s+виконан\w*|время\s+исполнен\w*|срок\s+исполнен\w*)"
+        r"час\s+виконан\w*|термін\s+виконан\w*|время\s+исполнен\w*|срок\s+исполнен\w*|"
+        r"час\s+оброб\w*|время\s+обработ\w*|processing\s+time)"
         r"\D{0,80}(?:от|від)?\s*(\d+)\s*(?:до|-)\s*(\d+)\s*"
         r"(час\w*|годин\w*|год\w*|минут\w*|мин\w*|хвилин\w*|хв\w*)",
         re.IGNORECASE,
@@ -420,7 +445,8 @@ DESCRIPTION_PAYMENT_TIME_PATTERNS = (
     re.compile(
         r"(?:оплат\w*|поступлен\w*|зачислен\w*|закрыт\w*|закрит\w*|"
         r"ожидан\w*|очікуван\w*|срок\s+оплат\w*|"
-        r"час\s+виконан\w*|термін\s+виконан\w*|время\s+исполнен\w*|срок\s+исполнен\w*)"
+        r"час\s+виконан\w*|термін\s+виконан\w*|время\s+исполнен\w*|срок\s+исполнен\w*|"
+        r"час\s+оброб\w*|время\s+обработ\w*|processing\s+time)"
         r"\D{0,80}(?:до|up\s+to)\s*(\d+)\s*"
         r"(час\w*|годин\w*|год\w*|минут\w*|мин\w*|хвилин\w*|хв\w*)",
         re.IGNORECASE,
@@ -1082,7 +1108,7 @@ def get_binance_order_metrics(order: dict) -> dict:
     )
 
     return {
-        "minutes": max_known_minutes(
+        "minutes": resolve_order_minutes(
             parse_int(adv.get("payTimeLimit")),
             parse_description_payment_minutes(description),
         ),
@@ -1103,7 +1129,7 @@ def get_okx_order_metrics(order: dict) -> dict:
     description = normalize_order_description(*get_okx_order_description_values(order))
 
     return {
-        "minutes": max_known_minutes(
+        "minutes": resolve_order_minutes(
             parse_int(order.get("paymentTimeoutMinutes")),
             parse_description_payment_minutes(description),
         ),
@@ -1231,6 +1257,9 @@ def categorize_payment_methods(
     if has_fop_payment_terms(description):
         categories.add(PAYMENT_CATEGORY_FOP)
 
+    if has_person_payment_terms(description):
+        categories.add(PAYMENT_CATEGORY_PERSON)
+
     return categories or {PAYMENT_CATEGORY_OTHER}
 
 
@@ -1328,20 +1357,47 @@ def has_fop_only_payment_terms(description: str | None) -> bool:
     )
 
 
+def has_person_payment_terms(description: str | None) -> bool:
+    text = normalize_search_text(description)
+
+    if not text:
+        return False
+
+    return contains_any(text, PERSON_PAYMENT_DESCRIPTION_KEYWORDS)
+
+
+def has_third_party_payment_deny_terms(description: str | None) -> bool:
+    text = normalize_search_text(description)
+
+    if not text:
+        return False
+
+    return contains_any(text, THIRD_PARTY_DENY_KEYWORDS) or any(
+        pattern.search(text) for pattern in THIRD_PARTY_DENY_PATTERNS
+    )
+
+
 def has_third_party_payment_terms(description: str | None) -> bool:
     text = normalize_search_text(description)
 
     if not text:
         return False
 
-    if contains_any(text, THIRD_PARTY_DENY_KEYWORDS) or any(
-        pattern.search(text) for pattern in THIRD_PARTY_DENY_PATTERNS
-    ):
+    if has_third_party_payment_deny_terms(text):
         return False
 
     return contains_any(text, THIRD_PARTY_PAYMENT_KEYWORDS) or any(
         pattern.search(text) for pattern in THIRD_PARTY_PAYMENT_PATTERNS
     )
+
+
+def has_split_payment_deny_terms(description: str | None) -> bool:
+    text = normalize_search_text(description)
+
+    if not text:
+        return False
+
+    return contains_any(text, SPLIT_PAYMENT_DENY_KEYWORDS)
 
 
 def has_split_payment_terms(description: str | None) -> bool:
@@ -1353,7 +1409,7 @@ def has_split_payment_terms(description: str | None) -> bool:
     if any(pattern.search(text) for pattern in SPLIT_PAYMENT_PATTERNS):
         return True
 
-    if contains_any(text, SPLIT_PAYMENT_DENY_KEYWORDS):
+    if has_split_payment_deny_terms(text):
         return False
 
     if contains_any(text, SPLIT_PAYMENT_KEYWORDS):
@@ -1414,6 +1470,13 @@ def max_known_minutes(*values: int | None) -> int | None:
     known_values = [value for value in values if value is not None]
 
     return max(known_values) if known_values else None
+
+
+def resolve_order_minutes(
+    api_minutes: int | None,
+    description_minutes: int | None,
+) -> int | None:
+    return description_minutes if description_minutes is not None else api_minutes
 
 
 def parse_int(value) -> int | None:

@@ -9,6 +9,8 @@ from services.p2p_filters import (
     filter_orders,
     get_binance_order_metrics,
     get_okx_order_metrics,
+    has_split_payment_deny_terms,
+    has_third_party_payment_deny_terms,
     normalize_description_check_mode,
     normalize_order_description,
     summarize_filter_rejections,
@@ -149,6 +151,8 @@ async def filter_orders_by_description(
     missing_classifications = 0
     missing_descriptions_blocked = 0
     regex_safety_blocked = 0
+    gpt_split_overrides = 0
+    gpt_third_party_overrides = 0
 
     for index, order in enumerate(gpt_orders):
         if not order_matches_regex_description(order, exchange, settings):
@@ -167,6 +171,18 @@ async def filter_orders_by_description(
             filtered_orders.append(order)
 
             continue
+
+        if classification.third_party_payments and has_third_party_payment_deny_terms(
+            descriptions[index],
+        ):
+            classification.third_party_payments = False
+            gpt_third_party_overrides += 1
+
+        if classification.split_payments and has_split_payment_deny_terms(
+            descriptions[index],
+        ):
+            classification.split_payments = False
+            gpt_split_overrides += 1
 
         blocked_by_split = (
             not settings.allow_split_payments and classification.split_payments
@@ -201,7 +217,7 @@ async def filter_orders_by_description(
             filtered_orders.append(order)
 
     logger.info(
-        "P2P description filter GPT result: exchange=%s input=%s output=%s classifications=%s missing=%s missing_descriptions_blocked=%s blocked_split=%s blocked_third_party=%s blocked_monobank_jar=%s blocked_both=%s blocked_multiple_reasons=%s regex_safety_blocked=%s",
+        "P2P description filter GPT result: exchange=%s input=%s output=%s classifications=%s missing=%s missing_descriptions_blocked=%s blocked_split=%s blocked_third_party=%s blocked_monobank_jar=%s blocked_both=%s blocked_multiple_reasons=%s regex_safety_blocked=%s gpt_split_overrides=%s gpt_third_party_overrides=%s",
         exchange,
         len(gpt_orders),
         len(filtered_orders),
@@ -214,6 +230,8 @@ async def filter_orders_by_description(
         blocked_both,
         blocked_multiple_reasons,
         regex_safety_blocked,
+        gpt_split_overrides,
+        gpt_third_party_overrides,
     )
 
     return filtered_orders
