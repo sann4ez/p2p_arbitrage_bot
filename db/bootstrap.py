@@ -2,9 +2,10 @@ import logging
 
 from config import Config
 from db import models
-from db.base import Base, engine
+from db.base import AsyncSessionLocal, Base, engine
 from db.migrations import add_p2p_filter_columns
 from db.seeders.reference_data import seed_reference_data
+from services.payment_method_service import PaymentMethodService
 
 
 logger = logging.getLogger(__name__)
@@ -24,5 +25,8 @@ async def bootstrap_database():
 
     if Config.DB_AUTO_SEED_REFERENCE_DATA:
         await seed_reference_data()
+
+    async with AsyncSessionLocal() as session:
+        await PaymentMethodService(session).sync_filter_keywords()
 
     logger.info("Database bootstrap done")

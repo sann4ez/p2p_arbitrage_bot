@@ -32,7 +32,16 @@ from keyboards.menu import (
     BTN_MY_INFO,
     BTN_P2P,
     BTN_P2P_FILTERS,
+    BTN_P2P_PAIRS,
     BTN_RESET_FILTERS,
+    CB_P2P_PAIR_BACK,
+    CB_P2P_PAIR_CRYPTO_PREFIX,
+    CB_P2P_PAIR_NOOP,
+    CB_P2P_PAIR_TOGGLE_PREFIX,
+    BTN_USER_PAYMENT_METHODS,
+    CB_USER_PAYMENT_BACK,
+    CB_USER_PAYMENT_FIAT_PREFIX,
+    CB_USER_PAYMENT_TOGGLE_PREFIX,
     FILTER_SCREEN_CANDIDATE_COUNT,
     FILTER_SCREEN_DESCRIPTION_CHECK,
     FILTER_SCREEN_DISPLAY_COUNT,
@@ -48,8 +57,14 @@ from keyboards.menu import (
     exchanges_kb,
     p2p_filter_values_inline_kb,
     p2p_filters_inline_kb,
+    p2p_pair_fiats_inline_kb,
+    p2p_pairs_inline_kb,
+    user_payment_fiats_inline_kb,
+    user_payment_methods_inline_kb,
 )
 from services.menu_service import root_menu_for_user
+from services.payment_method_service import PaymentMethodService
+from services.p2p_pair_service import P2PPairService, format_pairs_summary
 from services.p2p_filters import (
     PAYMENT_CATEGORY_FOP,
     PAYMENT_CATEGORY_OTHER,
@@ -157,8 +172,13 @@ TELEGRAM_USER_KNOWN_FIELDS = {
 async def p2p_menu(message: types.Message, state: FSMContext):
     await state.set_state(AppMenu.p2p_exchanges)
 
+    async with AsyncSessionLocal() as session:
+        pair_service = P2PPairService(session)
+        selected_pairs = await pair_service.list_selected_pairs(message.from_user.id)
+
     await message.answer(
-        "Оберіть біржу:",
+        "Оберіть біржу:\n\n"
+        f"Обрані P2P пари: <b>{escape(format_pairs_summary(selected_pairs))}</b>",
         reply_markup=exchanges_kb(),
     )
 
@@ -173,7 +193,10 @@ async def cabinet_menu(message: types.Message, state: FSMContext):
     )
 
 
-@router.message(StateFilter(AppMenu.p2p_filters), F.text == BTN_BACK)
+@router.message(
+    StateFilter(AppMenu.p2p_filters, AppMenu.p2p_pairs, AppMenu.payment_methods),
+    F.text == BTN_BACK,
+)
 async def back_to_cabinet(message: types.Message, state: FSMContext):
     await state.set_state(AppMenu.cabinet)
 
@@ -225,6 +248,143 @@ async def my_info(message: types.Message):
 async def p2p_filters(message: types.Message, state: FSMContext):
     await state.set_state(AppMenu.p2p_filters)
     await send_filters_menu(message)
+
+
+@router.message(F.text == BTN_P2P_PAIRS)
+async def p2p_pairs(message: types.Message, state: FSMContext):
+    await state.set_state(AppMenu.p2p_pairs)
+    await send_p2p_pairs_menu(message)
+
+
+@router.message(F.text == BTN_USER_PAYMENT_METHODS)
+async def user_payment_methods(message: types.Message, state: FSMContext):
+    await state.set_state(AppMenu.payment_methods)
+    await send_user_payment_fiats_menu(message)
+
+
+@router.callback_query(F.data == CB_USER_PAYMENT_BACK)
+async def back_to_user_payment_fiats(callback: types.CallbackQuery):
+    await callback.answer()
+    await edit_user_payment_fiats_menu(callback)
+
+
+@router.callback_query(F.data.startswith(CB_USER_PAYMENT_FIAT_PREFIX))
+async def choose_user_payment_fiat(callback: types.CallbackQuery):
+    fiat_currency_id = parse_user_payment_fiat_callback(callback.data or "")
+
+    if not fiat_currency_id:
+        await callback.answer("Не вдалося прочитати валюту", show_alert=True)
+        return
+
+    await callback.answer()
+    await edit_user_payment_methods_for_fiat(callback, fiat_currency_id)
+
+
+@router.callback_query(F.data.startswith(CB_USER_PAYMENT_TOGGLE_PREFIX))
+async def toggle_user_payment_method(callback: types.CallbackQuery):
+    payment_method_id = parse_user_payment_toggle_callback(callback.data or "")
+
+    if not payment_method_id:
+        await callback.answer("Не вдалося прочитати банк", show_alert=True)
+        return
+
+    async with AsyncSessionLocal() as session:
+        service = PaymentMethodService(session)
+        result = await service.toggle_user_method(
+            callback.from_user.id,
+            payment_method_id,
+        )
+
+    await callback.answer(result.message, show_alert=not result.changed)
+
+    if not result.methods:
+        await edit_user_payment_fiats_menu(callback)
+        return
+
+    await safe_edit_callback_message(
+        callback,
+        build_user_payment_methods_text(result.methods, prefix=result.message),
+        user_payment_methods_inline_kb(result.methods),
+    )
+
+
+@router.callback_query(F.data == CB_P2P_PAIR_NOOP)
+async def p2p_pair_noop(callback: types.CallbackQuery):
+    await callback.answer()
+
+
+@router.callback_query(F.data == CB_P2P_PAIR_BACK)
+async def back_to_p2p_pair_cryptos(callback: types.CallbackQuery):
+    async with AsyncSessionLocal() as session:
+        service = P2PPairService(session)
+        pairs = await service.list_available_pairs(callback.from_user.id)
+
+    await callback.answer()
+
+    if callback.message:
+        await safe_edit_callback_message(
+            callback,
+            build_p2p_pairs_text(pairs),
+            p2p_pairs_inline_kb(pairs) if pairs else None,
+        )
+
+
+@router.callback_query(F.data.startswith(CB_P2P_PAIR_CRYPTO_PREFIX))
+async def choose_p2p_pair_crypto(callback: types.CallbackQuery):
+    crypto_currency_id = parse_pair_crypto_callback(callback.data or "")
+
+    if not crypto_currency_id:
+        await callback.answer("Не вдалося прочитати стейбл", show_alert=True)
+        return
+
+    async with AsyncSessionLocal() as session:
+        service = P2PPairService(session)
+        pairs = await service.list_available_pairs(callback.from_user.id)
+
+    crypto_pairs = filter_pairs_by_crypto(pairs, crypto_currency_id)
+
+    if not crypto_pairs:
+        await callback.answer("Для цього стейбла немає доступних фіатів", show_alert=True)
+        return
+
+    await callback.answer(crypto_pairs[0].crypto_code)
+
+    if callback.message:
+        await safe_edit_callback_message(
+            callback,
+            build_p2p_pair_fiats_text(pairs, crypto_currency_id),
+            p2p_pair_fiats_inline_kb(pairs, crypto_currency_id),
+        )
+
+
+@router.callback_query(F.data.startswith(CB_P2P_PAIR_TOGGLE_PREFIX))
+async def toggle_p2p_pair_callback(callback: types.CallbackQuery):
+    crypto_currency_id, fiat_currency_id = parse_pair_callback(callback.data or "")
+
+    if not crypto_currency_id or not fiat_currency_id:
+        await callback.answer("Не вдалося прочитати пару", show_alert=True)
+        return
+
+    async with AsyncSessionLocal() as session:
+        service = P2PPairService(session)
+        result = await service.toggle_pair(
+            callback.from_user.id,
+            crypto_currency_id,
+            fiat_currency_id,
+        )
+
+    await callback.answer(result.message, show_alert=not result.changed)
+
+    if callback.message:
+        await safe_edit_callback_message(
+            callback,
+            build_p2p_pair_fiats_text(result.pairs, crypto_currency_id),
+            (
+                p2p_pair_fiats_inline_kb(result.pairs, crypto_currency_id)
+                if result.pairs
+                else None
+            ),
+        )
 
 
 @router.message(StateFilter(AppMenu.p2p_filters), F.text.startswith(BTN_FILTER_ORDER_TIME_PREFIX))
@@ -407,6 +567,90 @@ async def send_filters_menu(message: types.Message, prefix: str | None = None):
     )
 
 
+async def send_p2p_pairs_menu(message: types.Message):
+    async with AsyncSessionLocal() as session:
+        service = P2PPairService(session)
+        pairs = await service.list_available_pairs(message.from_user.id)
+
+    await message.answer(
+        build_p2p_pairs_text(pairs),
+        reply_markup=p2p_pairs_inline_kb(pairs) if pairs else None,
+    )
+
+
+async def send_user_payment_fiats_menu(message: types.Message):
+    async with AsyncSessionLocal() as session:
+        service = PaymentMethodService(session)
+        fiat_currencies = await service.list_fiat_currencies()
+        selected_counts = await get_user_payment_selected_counts(
+            service,
+            message.from_user.id,
+            fiat_currencies,
+        )
+
+    await message.answer(
+        build_user_payment_fiats_text(fiat_currencies),
+        reply_markup=(
+            user_payment_fiats_inline_kb(fiat_currencies, selected_counts)
+            if fiat_currencies
+            else None
+        ),
+    )
+
+
+async def edit_user_payment_fiats_menu(callback: types.CallbackQuery):
+    async with AsyncSessionLocal() as session:
+        service = PaymentMethodService(session)
+        fiat_currencies = await service.list_fiat_currencies()
+        selected_counts = await get_user_payment_selected_counts(
+            service,
+            callback.from_user.id,
+            fiat_currencies,
+        )
+
+    await safe_edit_callback_message(
+        callback,
+        build_user_payment_fiats_text(fiat_currencies),
+        (
+            user_payment_fiats_inline_kb(fiat_currencies, selected_counts)
+            if fiat_currencies
+            else None
+        ),
+    )
+
+
+async def edit_user_payment_methods_for_fiat(
+    callback: types.CallbackQuery,
+    fiat_currency_id: int,
+):
+    async with AsyncSessionLocal() as session:
+        service = PaymentMethodService(session)
+        methods = await service.list_user_methods_for_fiat(
+            callback.from_user.id,
+            fiat_currency_id,
+        )
+
+    await safe_edit_callback_message(
+        callback,
+        build_user_payment_methods_text(methods),
+        user_payment_methods_inline_kb(methods),
+    )
+
+
+async def get_user_payment_selected_counts(
+    service: PaymentMethodService,
+    telegram_id: int,
+    fiat_currencies,
+) -> dict[int, int]:
+    counts = {}
+
+    for fiat in fiat_currencies:
+        methods = await service.list_user_methods_for_fiat(telegram_id, fiat.id)
+        counts[fiat.id] = sum(1 for method in methods if method.is_selected)
+
+    return counts
+
+
 async def edit_filters_menu(
     callback: types.CallbackQuery,
     *,
@@ -488,6 +732,122 @@ def parse_set_callback(callback_data: str) -> tuple[str | None, str | None]:
         return None, None
 
     return parts[2], parts[3]
+
+
+def parse_pair_callback(callback_data: str) -> tuple[int | None, int | None]:
+    payload = callback_data[len(CB_P2P_PAIR_TOGGLE_PREFIX):]
+    parts = payload.split(":")
+
+    if len(parts) != 2:
+        return None, None
+
+    try:
+        return int(parts[0]), int(parts[1])
+    except ValueError:
+        return None, None
+
+
+def parse_pair_crypto_callback(callback_data: str) -> int | None:
+    payload = callback_data[len(CB_P2P_PAIR_CRYPTO_PREFIX):]
+
+    try:
+        return int(payload)
+    except ValueError:
+        return None
+
+
+def parse_user_payment_fiat_callback(callback_data: str) -> int | None:
+    payload = callback_data[len(CB_USER_PAYMENT_FIAT_PREFIX):]
+
+    try:
+        return int(payload)
+    except ValueError:
+        return None
+
+
+def parse_user_payment_toggle_callback(callback_data: str) -> int | None:
+    payload = callback_data[len(CB_USER_PAYMENT_TOGGLE_PREFIX):]
+
+    try:
+        return int(payload)
+    except ValueError:
+        return None
+
+
+def build_p2p_pairs_text(pairs) -> str:
+    selected_pairs = [pair for pair in pairs if pair.is_selected]
+
+    if not pairs:
+        return (
+            "<b>Мої P2P пари</b>\n\n"
+            "Поки немає доступних пар. Адмін має додати хоча б одну криптовалюту "
+            "і одну фіатну валюту."
+        )
+
+    return (
+        "<b>Мої P2P пари</b>\n\n"
+        "Спочатку оберіть стейбл, а на наступному кроці фіатні валюти "
+        "для P2P-пошуку.\n\n"
+        f"Обрані: <b>{escape(format_pairs_summary(selected_pairs))}</b>"
+    )
+
+
+def build_p2p_pair_fiats_text(pairs, crypto_currency_id: int) -> str:
+    crypto_pairs = filter_pairs_by_crypto(pairs, crypto_currency_id)
+    selected_pairs = [pair for pair in pairs if pair.is_selected]
+
+    if not crypto_pairs:
+        return build_p2p_pairs_text(pairs)
+
+    return (
+        f"<b>Мої P2P пари · {escape(crypto_pairs[0].crypto_code)}</b>\n\n"
+        "Оберіть фіатні валюти для цього стейбла.\n\n"
+        f"Обрані: <b>{escape(format_pairs_summary(selected_pairs))}</b>"
+    )
+
+
+def build_user_payment_fiats_text(fiat_currencies) -> str:
+    if not fiat_currencies:
+        return (
+            "<b>Мої банки</b>\n\n"
+            "Поки немає доступних фіатних валют. Адмін має додати хоча б одну валюту."
+        )
+
+    return (
+        "<b>Мої банки</b>\n\n"
+        "Оберіть валюту, а потім банки/методи оплати, які підходять для ваших "
+        "P2P-оголошень.\n\n"
+        "Якщо для валюти нічого не обрано, бот не обмежує оголошення банками."
+    )
+
+
+def build_user_payment_methods_text(methods, prefix: str | None = None) -> str:
+    if not methods:
+        return (
+            "<b>Мої банки</b>\n\n"
+            "Для цієї валюти ще немає доданих банків або методів оплати."
+        )
+
+    selected_count = sum(1 for method in methods if method.is_selected)
+    title = f"Мої банки · {escape(methods[0].fiat_code)}"
+
+    if prefix:
+        title = f"{escape(prefix)}\n\n{title}"
+
+    return (
+        f"<b>{title}</b>\n\n"
+        "Увімкніть банки, які хочете бачити у видачі.\n\n"
+        f"Обрано: <b>{selected_count}</b>\n"
+        "Якщо нічого не обрано — показуються всі банки для цієї валюти."
+    )
+
+
+def filter_pairs_by_crypto(pairs, crypto_currency_id: int):
+    return [
+        pair
+        for pair in pairs
+        if pair.crypto_currency_id == crypto_currency_id
+    ]
 
 
 async def apply_filter_value(session, telegram_id: int, field: str, raw_value: str):

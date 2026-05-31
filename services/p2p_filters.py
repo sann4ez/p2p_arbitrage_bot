@@ -1,4 +1,5 @@
 import re
+from collections import Counter
 from decimal import Decimal
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -26,6 +27,11 @@ from repositories.user_repository import UserRepository
 from services.okx_order_payload import get_okx_order_description_values
 
 MAX_FETCH_ORDER_COUNT = 200
+_EXTRA_PAYMENT_KEYWORDS_BY_CATEGORY = {
+    PAYMENT_CATEGORY_FOP: set(),
+    PAYMENT_CATEGORY_PERSON: set(),
+    PAYMENT_CATEGORY_OTHER: set(),
+}
 
 FOP_PAYMENT_KEYWORDS = (
     "iban",
@@ -81,6 +87,41 @@ PERSON_PAYMENT_KEYWORDS = (
     "credit dnepro",
     "bank credit dnepro",
     "bank vlasnyi rakhunok",
+    "blik",
+    "bank transfer",
+    "banktransfer",
+    "sepa",
+    "revolut",
+    "wise",
+    "zen",
+    "pko",
+    "pkobp",
+    "pko bank",
+    "pko bank polski",
+    "mbank",
+    "m bank",
+    "santander",
+    "pekao",
+    "bank pekao",
+    "ing",
+    "ing bank",
+    "ing bank slaski",
+    "alior",
+    "alior bank",
+    "millennium",
+    "bank millennium",
+    "bnp",
+    "bnp paribas",
+    "credit agricole",
+    "citi",
+    "citi handlowy",
+    "nest bank",
+    "velobank",
+    "velo bank",
+    "bank pocztowy",
+    "bos bank",
+    "boś bank",
+    "toyota bank",
 )
 
 THIRD_PARTY_PAYMENT_KEYWORDS = (
@@ -906,13 +947,118 @@ def filter_orders(
     return [
         order
         for order in orders
-        if order_matches(
+        if get_order_rejection_reason(
+            get_order_metrics(order, exchange),
+            settings,
+            apply_description_filters=apply_description_filters,
+            apply_payment_filters=apply_payment_filters,
+        ) is None
+    ]
+
+
+def summarize_filter_rejections(
+    orders: list[dict] | None,
+    exchange: str,
+    settings: P2PFilterSettings,
+    *,
+    apply_description_filters: bool = True,
+    apply_payment_filters: bool = True,
+) -> dict[str, int]:
+    if not orders:
+        return {}
+
+    counter = Counter()
+
+    for order in orders:
+        reason = get_order_rejection_reason(
             get_order_metrics(order, exchange),
             settings,
             apply_description_filters=apply_description_filters,
             apply_payment_filters=apply_payment_filters,
         )
+
+        if reason:
+            counter[reason] += 1
+
+    return dict(counter)
+
+
+def filter_orders_by_payment_methods(
+    orders: list[dict] | None,
+    exchange: str,
+    payment_methods,
+) -> list[dict]:
+    if not orders:
+        return []
+
+    if not payment_methods:
+        return list(orders)
+
+    return [
+        order
+        for order in orders
+        if order_matches_payment_methods(order, exchange, payment_methods)
     ]
+
+
+def summarize_payment_method_rejections(
+    orders: list[dict] | None,
+    exchange: str,
+    payment_methods,
+) -> dict[str, int]:
+    if not orders or not payment_methods:
+        return {}
+
+    counter = Counter()
+
+    for order in orders:
+        if not order_matches_payment_methods(order, exchange, payment_methods):
+            counter["user_payment_methods"] += 1
+
+    return dict(counter)
+
+
+def order_matches_payment_methods(order: dict, exchange: str, payment_methods) -> bool:
+    payment_names = get_order_payment_names(order, exchange)
+
+    return any(
+        payment_name_matches_method(payment_name, method)
+        for payment_name in payment_names
+        for method in payment_methods
+    )
+
+
+def get_order_payment_names(order: dict, exchange: str) -> list[str]:
+    if exchange == "binance":
+        adv = order.get("adv", {})
+        return get_binance_payment_names(adv.get("tradeMethods", []))
+
+    return [str(method) for method in order.get("paymentMethods", [])]
+
+
+def payment_name_matches_method(payment_name: str, method) -> bool:
+    normalized_name = normalize_payment_method_keyword(payment_name)
+    compact_name = compact_payment_method_keyword(payment_name)
+    keywords = [
+        normalize_payment_method_keyword(getattr(method, "code", None)),
+        normalize_payment_method_keyword(getattr(method, "name", None)),
+    ]
+    compact_keywords = [
+        compact_payment_method_keyword(getattr(method, "code", None)),
+        compact_payment_method_keyword(getattr(method, "name", None)),
+    ]
+
+    return any(
+        keyword
+        and normalized_name
+        and (keyword in normalized_name or normalized_name in keyword)
+        for keyword in keywords
+    ) or any(
+        keyword
+        and compact_name
+        and (keyword in compact_name or compact_name in keyword)
+        for keyword in compact_keywords
+    )
 
 
 def get_order_metrics(order: dict, exchange: str) -> dict:
@@ -996,47 +1142,63 @@ def order_matches(
     apply_description_filters: bool = True,
     apply_payment_filters: bool = True,
 ) -> bool:
+    return get_order_rejection_reason(
+        metrics,
+        settings,
+        apply_description_filters=apply_description_filters,
+        apply_payment_filters=apply_payment_filters,
+    ) is None
+
+
+def get_order_rejection_reason(
+    metrics: dict,
+    settings: P2PFilterSettings,
+    *,
+    apply_description_filters: bool = True,
+    apply_payment_filters: bool = True,
+) -> str | None:
     if settings.max_order_minutes is not None and not value_lte(
         metrics["minutes"],
         settings.max_order_minutes,
     ):
-        return False
+        return "max_order_minutes"
 
     if settings.min_trades is not None and not value_gte(
         metrics["trades"],
         settings.min_trades,
     ):
-        return False
+        return "min_trades"
 
     if settings.min_rating is not None and not value_gte(
         metrics["rating"],
         settings.min_rating,
     ):
-        return False
+        return "min_rating"
 
     if settings.min_completion is not None and not value_gte(
         metrics["completion"],
         settings.min_completion,
     ):
-        return False
+        return "min_completion"
 
     if apply_description_filters:
         if not settings.allow_third_party_payments and metrics["third_party_payments"]:
-            return False
+            return "third_party_payments"
 
         if not settings.allow_split_payments and metrics["split_payments"]:
-            return False
+            return "split_payments"
 
         if (
             not settings.allow_monobank_jar_payments
             and metrics["monobank_jar_payments"]
         ):
-            return False
+            return "monobank_jar_payments"
 
     if apply_payment_filters:
-        return bool(settings.payment_categories & metrics["payment_categories"])
+        if not settings.payment_categories & metrics["payment_categories"]:
+            return "payment_categories"
 
-    return True
+    return None
 
 
 def value_lte(value, threshold) -> bool:
@@ -1057,11 +1219,11 @@ def categorize_payment_methods(
     categories = set()
 
     for name in payment_names:
-        normalized = name.lower()
+        normalized = normalize_payment_method_keyword(name)
 
-        if contains_any(normalized, FOP_PAYMENT_KEYWORDS):
+        if contains_any(normalized, payment_keywords(PAYMENT_CATEGORY_FOP)):
             categories.add(PAYMENT_CATEGORY_FOP)
-        elif contains_any(normalized, PERSON_PAYMENT_KEYWORDS):
+        elif contains_any(normalized, payment_keywords(PAYMENT_CATEGORY_PERSON)):
             categories.add(PAYMENT_CATEGORY_PERSON)
         else:
             categories.add(PAYMENT_CATEGORY_OTHER)
@@ -1070,6 +1232,46 @@ def categorize_payment_methods(
         categories.add(PAYMENT_CATEGORY_FOP)
 
     return categories or {PAYMENT_CATEGORY_OTHER}
+
+
+def set_extra_payment_method_keywords(methods):
+    for category in _EXTRA_PAYMENT_KEYWORDS_BY_CATEGORY:
+        _EXTRA_PAYMENT_KEYWORDS_BY_CATEGORY[category].clear()
+
+    for method in methods:
+        category = getattr(method, "category", None)
+
+        if category not in _EXTRA_PAYMENT_KEYWORDS_BY_CATEGORY:
+            continue
+
+        for value in (getattr(method, "code", None), getattr(method, "name", None)):
+            keyword = normalize_payment_method_keyword(value)
+
+            if keyword:
+                _EXTRA_PAYMENT_KEYWORDS_BY_CATEGORY[category].add(keyword)
+
+
+def normalize_payment_method_keyword(value) -> str:
+    if not value:
+        return ""
+
+    return " ".join(str(value).lower().replace("_", " ").split())
+
+
+def compact_payment_method_keyword(value) -> str:
+    return re.sub(r"\W+", "", normalize_payment_method_keyword(value), flags=re.UNICODE)
+
+
+def payment_keywords(category: str) -> tuple[str, ...]:
+    static_keywords = {
+        PAYMENT_CATEGORY_FOP: FOP_PAYMENT_KEYWORDS,
+        PAYMENT_CATEGORY_PERSON: PERSON_PAYMENT_KEYWORDS,
+        PAYMENT_CATEGORY_OTHER: (),
+    }.get(category, ())
+
+    return tuple(static_keywords) + tuple(
+        _EXTRA_PAYMENT_KEYWORDS_BY_CATEGORY.get(category, set())
+    )
 
 
 def contains_any(text: str, keywords: tuple[str, ...]) -> bool:

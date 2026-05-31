@@ -58,16 +58,29 @@ async def get_cached_p2p_orders(
     exchange: str,
     direction: str,
     rows: int,
+    pair_key: str | None = None,
     fetcher: Callable[[], Awaitable[list[dict]]],
 ) -> list[dict]:
-    cache_key = f"p2p-orders:{exchange}:{direction}:{rows}"
+    pair_part = pair_key or "default"
+    cache_key = f"p2p-orders:{exchange}:{direction}:{pair_part}:{rows}"
 
-    return await get_or_fetch_cache(
+    orders = await get_or_fetch_cache(
         cache_key=cache_key,
         exchange=exchange,
         ttl_seconds=get_orders_cache_ttl_seconds(),
         fetcher=fetcher,
     )
+
+    logger.info(
+        "P2P orders cache result: exchange=%s direction=%s pair=%s requested=%s returned=%s",
+        exchange,
+        direction,
+        pair_part,
+        rows,
+        len(orders) if isinstance(orders, list) else "unknown",
+    )
+
+    return orders
 
 
 async def get_cached_p2p_details(

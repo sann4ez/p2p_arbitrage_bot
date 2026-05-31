@@ -1,6 +1,9 @@
 import asyncio
+import logging
 
 import aiohttp
+
+logger = logging.getLogger(__name__)
 
 BINANCE_P2P_URL = "https://p2p.binance.com/bapi/c2c/v2/friendly/c2c/adv/search"
 BINANCE_P2P_DETAIL_URL = "https://p2p.binance.com/bapi/c2c/v2/public/c2c/adv/detail"
@@ -26,6 +29,14 @@ async def fetch_binance_p2p(
 ):
     timeout = aiohttp.ClientTimeout(total=15)
     orders = []
+    logger.info(
+        "Binance P2P API request start: trade_type=%s asset=%s fiat=%s rows=%s amount=%s",
+        trade_type,
+        asset,
+        fiat,
+        rows,
+        amount,
+    )
 
     try:
         async with aiohttp.ClientSession(headers=BINANCE_HEADERS, timeout=timeout) as session:
@@ -49,15 +60,79 @@ async def fetch_binance_p2p(
                     response.raise_for_status()
                     data = await response.json(content_type=None)
 
+                code = data.get("code")
+                message = data.get("message") or data.get("msg")
+
+                if code and code != "000000":
+                    logger.warning(
+                        "Binance P2P API returned non-success code: trade_type=%s asset=%s fiat=%s page=%s code=%s message=%s",
+                        trade_type,
+                        asset,
+                        fiat,
+                        page,
+                        code,
+                        message,
+                    )
+                    break
+
                 page_orders = data.get("data")
 
-                if not isinstance(page_orders, list) or not page_orders:
+                if not isinstance(page_orders, list):
+                    logger.warning(
+                        "Binance P2P API returned unexpected payload: trade_type=%s asset=%s fiat=%s page=%s code=%s keys=%s",
+                        trade_type,
+                        asset,
+                        fiat,
+                        page,
+                        code,
+                        sorted(data.keys()),
+                    )
+                    break
+
+                logger.info(
+                    "Binance P2P API page result: trade_type=%s asset=%s fiat=%s page=%s page_rows=%s total_rows=%s code=%s",
+                    trade_type,
+                    asset,
+                    fiat,
+                    page,
+                    len(page_orders),
+                    len(orders) + len(page_orders),
+                    code,
+                )
+
+                if not page_orders:
                     break
 
                 orders.extend(page_orders)
                 page += 1
-    except (aiohttp.ClientError, asyncio.TimeoutError):
+    except aiohttp.ClientResponseError as error:
+        logger.warning(
+            "Binance P2P API HTTP error: trade_type=%s asset=%s fiat=%s status=%s message=%s",
+            trade_type,
+            asset,
+            fiat,
+            error.status,
+            error.message,
+        )
         return []
+    except (aiohttp.ClientError, asyncio.TimeoutError) as error:
+        logger.warning(
+            "Binance P2P API request failed: trade_type=%s asset=%s fiat=%s error=%s",
+            trade_type,
+            asset,
+            fiat,
+            type(error).__name__,
+        )
+        return []
+
+    logger.info(
+        "Binance P2P API request done: trade_type=%s asset=%s fiat=%s requested=%s returned=%s",
+        trade_type,
+        asset,
+        fiat,
+        rows,
+        len(orders[:rows]),
+    )
 
     return orders[:rows]
 

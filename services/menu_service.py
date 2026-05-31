@@ -1,5 +1,9 @@
 from db.base import AsyncSessionLocal
-from db.dto import PERMISSION_MANAGE_CURRENCIES, PERMISSION_VIEW_ADMIN_PANEL
+from db.dto import (
+    PERMISSION_MANAGE_CURRENCIES,
+    PERMISSION_MANAGE_PAYMENT_METHODS,
+    PERMISSION_VIEW_ADMIN_PANEL,
+)
 from keyboards.menu import admin_menu_kb, root_menu_kb
 from services.user_service import UserService
 
@@ -22,4 +26,5 @@ async def admin_menu_for_user(telegram_id: int):
 
     return admin_menu_kb(
         can_manage_currencies=PERMISSION_MANAGE_CURRENCIES in permissions,
+        can_manage_payment_methods=PERMISSION_MANAGE_PAYMENT_METHODS in permissions,
     )
