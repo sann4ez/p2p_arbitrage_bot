@@ -49,19 +49,71 @@ async def fetch_okx_p2p(
         "isAbleFilter": "false",
     }
     timeout = aiohttp.ClientTimeout(total=15)
+    logger.info(
+        "OKX P2P API request start: side=%s asset=%s fiat=%s rows=%s",
+        side,
+        asset,
+        fiat,
+        rows,
+    )
 
     try:
         async with aiohttp.ClientSession(headers=OKX_HEADERS, timeout=timeout) as session:
             async with session.get(OKX_P2P_URL, params=params) as response:
                 response.raise_for_status()
                 data = await response.json(content_type=None)
-    except (aiohttp.ClientError, asyncio.TimeoutError):
+    except aiohttp.ClientResponseError as error:
+        logger.warning(
+            "OKX P2P API HTTP error: side=%s asset=%s fiat=%s status=%s message=%s",
+            side,
+            asset,
+            fiat,
+            error.status,
+            error.message,
+        )
+        return []
+    except (aiohttp.ClientError, asyncio.TimeoutError) as error:
+        logger.warning(
+            "OKX P2P API request failed: side=%s asset=%s fiat=%s error=%s",
+            side,
+            asset,
+            fiat,
+            type(error).__name__,
+        )
         return []
 
     if not is_okx_success_response(data):
+        logger.warning(
+            "OKX P2P API returned non-success payload: side=%s asset=%s fiat=%s code=%s error_code=%s message=%s",
+            side,
+            asset,
+            fiat,
+            data.get("code"),
+            data.get("error_code"),
+            data.get("msg") or data.get("error_message") or data.get("detailMsg"),
+        )
         return []
 
     orders = data.get("data", {}).get(side.lower(), [])
+
+    if not isinstance(orders, list):
+        logger.warning(
+            "OKX P2P API returned unexpected orders payload: side=%s asset=%s fiat=%s order_type=%s",
+            side,
+            asset,
+            fiat,
+            type(orders).__name__,
+        )
+        return []
+
+    logger.info(
+        "OKX P2P API request done: side=%s asset=%s fiat=%s requested=%s returned=%s",
+        side,
+        asset,
+        fiat,
+        rows,
+        len(orders[:rows]),
+    )
 
     return orders[:rows]
 
@@ -70,6 +122,8 @@ async def fetch_okx_p2p_details(
     order_ids: list[object],
     *,
     side: str | None = None,
+    asset: str = "USDT",
+    fiat: str = "UAH",
 ) -> dict[str, dict]:
     unique_order_ids = []
     seen = set()
@@ -103,6 +157,8 @@ async def fetch_okx_p2p_details(
                         semaphore,
                         order_id,
                         side=side,
+                        asset=asset,
+                        fiat=fiat,
                     )
                     for order_id in unique_order_ids
                 ),
@@ -131,9 +187,17 @@ async def _fetch_okx_p2p_detail_limited(
     order_id: str,
     *,
     side: str | None = None,
+    asset: str = "USDT",
+    fiat: str = "UAH",
 ) -> tuple[str, dict]:
     async with semaphore:
-        return await _fetch_okx_p2p_detail(session, order_id, side=side)
+        return await _fetch_okx_p2p_detail(
+            session,
+            order_id,
+            side=side,
+            asset=asset,
+            fiat=fiat,
+        )
 
 
 async def _fetch_okx_p2p_detail(
@@ -141,8 +205,10 @@ async def _fetch_okx_p2p_detail(
     order_id: str,
     *,
     side: str | None = None,
+    asset: str = "USDT",
+    fiat: str = "UAH",
 ) -> tuple[str, dict]:
-    referers = get_okx_detail_referers(order_id, side)
+    referers = get_okx_detail_referers(order_id, side, asset=asset, fiat=fiat)
     last_status = None
     last_body = ""
 
@@ -207,16 +273,28 @@ def build_okx_detail_headers(referer: str, request_timestamp: int) -> dict[str, 
     return headers
 
 
-def get_okx_detail_referers(order_id: str, side: str | None = None) -> list[str]:
+def get_okx_detail_referers(
+    order_id: str,
+    side: str | None = None,
+    *,
+    asset: str = "USDT",
+    fiat: str = "UAH",
+) -> list[str]:
     sides = [side] if side in OKX_P2P_MARKET_URLS else ["sell", "buy"]
     referers = []
 
     for item in sides:
-        base_url = OKX_P2P_MARKET_URLS[item]
+        base_url = build_okx_market_url(item, asset=asset, fiat=fiat)
         referers.append(f"{base_url}?id={order_id}")
         referers.append(base_url)
 
     return referers
+
+
+def build_okx_market_url(side: str, *, asset: str = "USDT", fiat: str = "UAH") -> str:
+    action = "buy" if side == "sell" else "sell"
+
+    return f"https://www.okx.com/p2p-markets/{fiat.lower()}/{action}-{asset.lower()}"
 
 
 def extract_okx_detail(data: dict) -> dict:

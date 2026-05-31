@@ -11,6 +11,7 @@ from services.p2p_filters import (
     get_okx_order_metrics,
     normalize_description_check_mode,
     normalize_order_description,
+    summarize_filter_rejections,
 )
 from services.p2p_gpt_classifier import classify_p2p_descriptions
 
@@ -60,11 +61,12 @@ async def filter_orders_by_description(
             if not should_block_missing_description(order, exchange)
         ]
         logger.info(
-            "P2P description filter regex result: exchange=%s input=%s output=%s blocked=%s",
+            "P2P description filter regex result: exchange=%s input=%s output=%s blocked=%s reasons=%s",
             exchange,
             len(orders),
             len(filtered_orders),
             len(orders) - len(filtered_orders),
+            summarize_filter_rejections(orders, exchange, settings),
         )
         return filtered_orders
 
@@ -78,11 +80,17 @@ async def filter_orders_by_description(
             apply_description_filters=False,
         )
         logger.info(
-            "P2P description filter detail-aware base result before GPT: exchange=%s input=%s output=%s blocked=%s",
+            "P2P description filter detail-aware base result before GPT: exchange=%s input=%s output=%s blocked=%s reasons=%s",
             exchange,
             len(orders),
             len(gpt_orders),
             len(orders) - len(gpt_orders),
+            summarize_filter_rejections(
+                orders,
+                exchange,
+                settings,
+                apply_description_filters=False,
+            ),
         )
 
         if not gpt_orders:
@@ -91,11 +99,12 @@ async def filter_orders_by_description(
     if mode == DESCRIPTION_CHECK_REGEX_GPT:
         gpt_orders = filter_orders(orders, exchange, settings)
         logger.info(
-            "P2P description filter regex prefilter result: exchange=%s input=%s output=%s blocked=%s",
+            "P2P description filter regex prefilter result: exchange=%s input=%s output=%s blocked=%s reasons=%s",
             exchange,
             len(orders),
             len(gpt_orders),
             len(orders) - len(gpt_orders),
+            summarize_filter_rejections(orders, exchange, settings),
         )
 
         if not gpt_orders:

@@ -1,5 +1,6 @@
 OKX_ORDER_ID_FIELDS = (
     "id",
+    "publicId",
     "orderId",
     "adId",
     "advertisementId",

@@ -61,6 +61,8 @@ class P2POrderMessage:
     price: Any
     min_amount: Any
     max_amount: Any
+    crypto_code: str = "USDT"
+    fiat_code: str = "UAH"
     payment_methods: str = ""
     available: Any | None = None
     orders_count: Any | None = None
@@ -69,3 +71,16 @@ class P2POrderMessage:
     trade_minutes: Any | None = None
     description: str | None = None
     order_url: str | None = None
+
+
+@dataclass(frozen=True)
+class P2PUserPair:
+    crypto_currency_id: int
+    fiat_currency_id: int
+    crypto_code: str
+    fiat_code: str
+    is_selected: bool = False
+
+    @property
+    def label(self) -> str:
+        return f"{self.crypto_code}/{self.fiat_code}"

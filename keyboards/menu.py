@@ -15,6 +15,7 @@ from db.dto import (
     PAYMENT_CATEGORY_OTHER,
     PAYMENT_CATEGORY_PERSON,
     get_currency_options,
+    get_payment_method_options,
 )
 
 
@@ -27,13 +28,16 @@ BTN_P2P = "💱 P2P"
 BTN_CABINET = "👤 Особистий кабінет"
 BTN_ADMIN_PANEL = "🛠 Адмін панель"
 BTN_ADMIN_CURRENCIES = "🪙 Валюти"
+BTN_ADMIN_PAYMENT_METHODS = "🏦 Методи оплати"
 BTN_ADD_FIAT_CURRENCY = "➕ Додати фіат"
 BTN_ADD_CRYPTO_CURRENCY = "➕ Додати крипту"
 BTN_LIST_CURRENCIES = "📋 Список валют"
 BTN_MY_INFO = "ℹ️ Інфо про себе"
 BTN_P2P_FILTERS = "⚙️ Фільтри P2P"
-BTN_UAH_TO_USDT = "₴ UAH → ₮ USDT"
-BTN_USDT_TO_UAH = "₮ USDT → ₴ UAH"
+BTN_P2P_PAIRS = "💹 Мої P2P пари"
+BTN_USER_PAYMENT_METHODS = "🏦 Мої банки"
+BTN_UAH_TO_USDT = "₴ Фіат → ₮ Крипта"
+BTN_USDT_TO_UAH = "₮ Крипта → ₴ Фіат"
 BTN_BACK = "⬅️ Назад"
 BTN_RESET_FILTERS = "♻️ Скинути фільтри"
 
@@ -58,6 +62,19 @@ CB_FILTERS_SET_PREFIX = "p2pf:set:"
 CB_FILTERS_PAY_PREFIX = "p2pf:pay:"
 CB_ADMIN_CURRENCIES_MENU = "admcur:menu"
 CB_ADMIN_CURRENCY_ADD_PREFIX = "admcur:add:"
+CB_ADMIN_PAYMENT_ADD_PREFIX = "admpay:add:"
+CB_ADMIN_PAYMENT_FIAT_PREFIX = "admpay:fiat:"
+CB_ADMIN_PAYMENT_FIATS_MENU = "admpay:fiats"
+CB_P2P_PAIR_BACK = "p2ppair:back"
+CB_P2P_PAIR_CRYPTO_PREFIX = "p2ppair:crypto:"
+CB_P2P_PAIR_NOOP = "p2ppair:noop"
+CB_P2P_PAIR_SELECT_BACK_PREFIX = "p2ppair:select_back:"
+CB_P2P_PAIR_SELECT_CRYPTO_PREFIX = "p2ppair:select_crypto:"
+CB_P2P_PAIR_SELECT_PREFIX = "p2ppair:select:"
+CB_P2P_PAIR_TOGGLE_PREFIX = "p2ppair:toggle:"
+CB_USER_PAYMENT_BACK = "userpay:back"
+CB_USER_PAYMENT_FIAT_PREFIX = "userpay:fiat:"
+CB_USER_PAYMENT_TOGGLE_PREFIX = "userpay:toggle:"
 
 FILTER_SCREEN_ORDER_TIME = "time"
 FILTER_SCREEN_MIN_TRADES = "trades"
@@ -121,6 +138,10 @@ def cabinet_kb():
                 KeyboardButton(text=BTN_P2P_FILTERS),
             ],
             [
+                KeyboardButton(text=BTN_P2P_PAIRS),
+                KeyboardButton(text=BTN_USER_PAYMENT_METHODS),
+            ],
+            [
                 KeyboardButton(text=BTN_BACK),
             ],
         ],
@@ -128,11 +149,17 @@ def cabinet_kb():
     )
 
 
-def admin_menu_kb(can_manage_currencies: bool = False):
+def admin_menu_kb(
+    can_manage_currencies: bool = False,
+    can_manage_payment_methods: bool = False,
+):
     keyboard = []
 
     if can_manage_currencies:
         keyboard.append([KeyboardButton(text=BTN_ADMIN_CURRENCIES)])
+
+    if can_manage_payment_methods:
+        keyboard.append([KeyboardButton(text=BTN_ADMIN_PAYMENT_METHODS)])
 
     keyboard.append([KeyboardButton(text=BTN_BACK)])
 
@@ -192,10 +219,278 @@ def admin_currency_options_inline_kb(
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
+def admin_payment_fiats_inline_kb(fiat_currencies, method_counts: dict[int, int]):
+    rows = []
+
+    for fiat in fiat_currencies:
+        count = method_counts.get(fiat.id, 0)
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text=f"{fiat.code} · {count} методів",
+                    callback_data=f"{CB_ADMIN_PAYMENT_FIAT_PREFIX}{fiat.id}",
+                ),
+            ]
+        )
+
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def admin_payment_options_inline_kb(fiat, existing_codes: set[str] | None = None):
+    existing_codes = existing_codes or set()
+    rows = []
+
+    for option in get_payment_method_options(fiat.code):
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text=format_payment_method_option_label(option, existing_codes),
+                    callback_data=(
+                        f"{CB_ADMIN_PAYMENT_ADD_PREFIX}"
+                        f"{fiat.id}:{option.code}"
+                    ),
+                ),
+            ]
+        )
+
+    rows.append(
+        [
+            InlineKeyboardButton(
+                text="⬅️ До валют",
+                callback_data=CB_ADMIN_PAYMENT_FIATS_MENU,
+            ),
+        ]
+    )
+
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def user_payment_fiats_inline_kb(fiat_currencies, selected_counts: dict[int, int]):
+    rows = []
+
+    for fiat in fiat_currencies:
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text=f"{fiat.code} · {selected_counts.get(fiat.id, 0)} обрано",
+                    callback_data=f"{CB_USER_PAYMENT_FIAT_PREFIX}{fiat.id}",
+                ),
+            ]
+        )
+
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def user_payment_methods_inline_kb(methods):
+    rows = []
+
+    for method_row in chunked(methods, 2):
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text=format_user_payment_method_label(method),
+                    callback_data=(
+                        f"{CB_USER_PAYMENT_TOGGLE_PREFIX}"
+                        f"{method.payment_method_id}"
+                    ),
+                )
+                for method in method_row
+            ]
+        )
+
+    rows.append(
+        [
+            InlineKeyboardButton(
+                text="⬅️ До валют",
+                callback_data=CB_USER_PAYMENT_BACK,
+            ),
+        ]
+    )
+
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def p2p_pairs_inline_kb(pairs):
+    return p2p_pair_cryptos_inline_kb(pairs)
+
+
+def p2p_pair_cryptos_inline_kb(pairs):
+    rows = []
+
+    for crypto_code, crypto_pairs in group_pairs_by_crypto(pairs):
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text=format_crypto_pair_button_text(crypto_code, crypto_pairs),
+                    callback_data=(
+                        f"{CB_P2P_PAIR_CRYPTO_PREFIX}"
+                        f"{crypto_pairs[0].crypto_currency_id}"
+                    ),
+                ),
+            ]
+        )
+
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def p2p_pair_fiats_inline_kb(pairs, crypto_currency_id: int):
+    rows = []
+    crypto_pairs = [
+        pair
+        for pair in pairs
+        if pair.crypto_currency_id == crypto_currency_id
+    ]
+
+    for pair_row in chunked(crypto_pairs, 3):
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text=format_pair_button_text(pair, selected_mode=False),
+                    callback_data=(
+                        f"{CB_P2P_PAIR_TOGGLE_PREFIX}"
+                        f"{pair.crypto_currency_id}:{pair.fiat_currency_id}"
+                    ),
+                )
+                for pair in pair_row
+            ]
+        )
+
+    rows.append(
+        [
+            InlineKeyboardButton(
+                text="⬅️ До стейблів",
+                callback_data=CB_P2P_PAIR_BACK,
+            ),
+        ]
+    )
+
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def p2p_pair_select_cryptos_inline_kb(pairs, exchange: str):
+    rows = []
+
+    for crypto_code, crypto_pairs in group_pairs_by_crypto(pairs):
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text=format_exchange_crypto_button_text(crypto_code, crypto_pairs),
+                    callback_data=(
+                        f"{CB_P2P_PAIR_SELECT_CRYPTO_PREFIX}"
+                        f"{exchange}:{crypto_pairs[0].crypto_currency_id}"
+                    ),
+                ),
+            ]
+        )
+
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def p2p_pair_select_fiats_inline_kb(
+    pairs,
+    exchange: str,
+    crypto_currency_id: int,
+):
+    rows = []
+    crypto_pairs = [
+        pair
+        for pair in pairs
+        if pair.crypto_currency_id == crypto_currency_id
+    ]
+
+    for pair_row in chunked(crypto_pairs, 3):
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text=pair.fiat_code,
+                    callback_data=(
+                        f"{CB_P2P_PAIR_SELECT_PREFIX}"
+                        f"{exchange}:{pair.crypto_currency_id}:{pair.fiat_currency_id}"
+                    ),
+                )
+                for pair in pair_row
+            ]
+        )
+
+    rows.append(
+        [
+            InlineKeyboardButton(
+                text="⬅️ До стейблів",
+                callback_data=f"{CB_P2P_PAIR_SELECT_BACK_PREFIX}{exchange}",
+            ),
+        ]
+    )
+
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def group_pairs_by_crypto(pairs):
+    grouped = {}
+
+    for pair in pairs:
+        grouped.setdefault(pair.crypto_code, []).append(pair)
+
+    return grouped.items()
+
+
+def chunked(items, size: int):
+    return [items[index:index + size] for index in range(0, len(items), size)]
+
+
+def format_pair_button_text(pair, selected_mode: bool) -> str:
+    if selected_mode:
+        return pair.fiat_code
+
+    prefix = "✅" if pair.is_selected else "➕"
+
+    return f"{prefix} {pair.fiat_code}"
+
+
+def format_crypto_pair_button_text(crypto_code: str, pairs) -> str:
+    selected_count = sum(1 for pair in pairs if pair.is_selected)
+
+    if selected_count:
+        return f"✅ {crypto_code} · {selected_count}/{len(pairs)}"
+
+    return f"➕ {crypto_code}"
+
+
+def format_exchange_crypto_button_text(crypto_code: str, pairs) -> str:
+    if len(pairs) == 1:
+        return crypto_code
+
+    return f"{crypto_code} · {len(pairs)}"
+
+
 def format_currency_option_label(option, existing_codes: set[str]) -> str:
     prefix = "✅" if option.code in existing_codes else "➕"
 
     return f"{prefix} {option.code} — {option.name}"
+
+
+def format_payment_method_option_label(option, existing_codes: set[str]) -> str:
+    prefix = "✅" if option.code in existing_codes else "➕"
+
+    return (
+        f"{prefix} {option.name} "
+        f"({format_payment_method_category(option.category)})"
+    )
+
+
+def format_payment_method_category(category: str | None) -> str:
+    labels = {
+        PAYMENT_CATEGORY_FOP: "ФОП/ТОВ",
+        PAYMENT_CATEGORY_PERSON: "фізособа",
+        PAYMENT_CATEGORY_OTHER: "інші",
+    }
+
+    return labels.get(category, "інші")
+
+
+def format_user_payment_method_label(method) -> str:
+    prefix = "✅" if method.is_selected else "➕"
+
+    return f"{prefix} {method.name}"
 
 
 def p2p_filters_kb(settings):

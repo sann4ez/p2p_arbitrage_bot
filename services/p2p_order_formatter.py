@@ -16,23 +16,51 @@ OKX_P2P_MARKET_URLS = {
 ORDER_DESCRIPTION_LIMIT = 450
 
 
-def build_binance_order_blocks(ads: list[dict]) -> list[str]:
-    return [format_order_message(build_binance_order_message(ad)) for ad in ads]
+def build_binance_order_blocks(
+    ads: list[dict],
+    *,
+    asset: str = "USDT",
+    fiat: str = "UAH",
+) -> list[str]:
+    return [
+        format_order_message(build_binance_order_message(ad, asset=asset, fiat=fiat))
+        for ad in ads
+    ]
 
 
 def build_binance_order_urls(ads: list[dict]) -> list[str | None]:
     return [build_binance_order_url(ad) for ad in ads]
 
 
-def build_okx_order_blocks(ads: list[dict], side: str) -> list[str]:
-    return [format_order_message(build_okx_order_message(ad, side)) for ad in ads]
+def build_okx_order_blocks(
+    ads: list[dict],
+    side: str,
+    *,
+    asset: str = "USDT",
+    fiat: str = "UAH",
+) -> list[str]:
+    return [
+        format_order_message(build_okx_order_message(ad, side, asset=asset, fiat=fiat))
+        for ad in ads
+    ]
 
 
-def build_okx_order_urls(ads: list[dict], side: str) -> list[str | None]:
-    return [build_okx_order_url(ad, side) for ad in ads]
+def build_okx_order_urls(
+    ads: list[dict],
+    side: str,
+    *,
+    asset: str = "USDT",
+    fiat: str = "UAH",
+) -> list[str | None]:
+    return [build_okx_order_url(ad, side, asset=asset, fiat=fiat) for ad in ads]
 
 
-def build_binance_order_message(ad: dict) -> P2POrderMessage:
+def build_binance_order_message(
+    ad: dict,
+    *,
+    asset: str = "USDT",
+    fiat: str = "UAH",
+) -> P2POrderMessage:
     adv = ad.get("adv", {})
     advertiser = ad.get("advertiser", {})
     detail = ad.get("_detail") if isinstance(ad.get("_detail"), dict) else {}
@@ -42,6 +70,8 @@ def build_binance_order_message(ad: dict) -> P2POrderMessage:
         price=adv.get("price"),
         min_amount=adv.get("minSingleTransAmount"),
         max_amount=adv.get("dynamicMaxSingleTransAmount"),
+        crypto_code=asset,
+        fiat_code=fiat,
         payment_methods=format_binance_payment_methods(adv.get("tradeMethods", [])),
         available=adv.get("tradableQuantity") or adv.get("surplusAmount"),
         orders_count=advertiser.get("monthOrderCount") or advertiser.get("orderCount"),
@@ -59,7 +89,13 @@ def build_binance_order_message(ad: dict) -> P2POrderMessage:
     )
 
 
-def build_okx_order_message(ad: dict, side: str) -> P2POrderMessage:
+def build_okx_order_message(
+    ad: dict,
+    side: str,
+    *,
+    asset: str = "USDT",
+    fiat: str = "UAH",
+) -> P2POrderMessage:
     rating = format_okx_rating(ad)
     completion_rate = format_percent(ad.get("completedRate"))
 
@@ -71,21 +107,24 @@ def build_okx_order_message(ad: dict, side: str) -> P2POrderMessage:
         price=ad.get("price"),
         min_amount=ad.get("quoteMinAmountPerOrder"),
         max_amount=ad.get("quoteMaxAmountPerOrder"),
-        payment_methods=", ".join(ad.get("paymentMethods", [])[:3]),
+        crypto_code=asset,
+        fiat_code=fiat,
+        payment_methods=format_okx_payment_methods(ad.get("paymentMethods", [])),
         available=ad.get("availableAmount"),
         orders_count=ad.get("completedOrderQuantity"),
         rating=rating,
         completion_rate=completion_rate,
         trade_minutes=ad.get("paymentTimeoutMinutes"),
         description=format_order_description(*get_okx_order_description_values(ad)),
-        order_url=build_okx_order_url(ad, side),
+        order_url=build_okx_order_url(ad, side, asset=asset, fiat=fiat),
     )
 
 
 def format_order_message(order: P2POrderMessage) -> str:
     lines = [
+        f"💱 Пара: <b>{escape(order.crypto_code)}/{escape(order.fiat_code)}</b>",
         f"👤 {escape(str(order.merchant))}",
-        f"💰 Ціна: <b>{order.price} UAH</b>",
+        f"💰 Ціна: <b>{order.price} {escape(order.fiat_code)}</b>",
         f"📦 Ліміт: {order.min_amount} – {order.max_amount}",
     ]
 
@@ -93,7 +132,7 @@ def format_order_message(order: P2POrderMessage) -> str:
         lines.append(f"🏦 Оплата: {escape(order.payment_methods)}")
 
     if order.available:
-        lines.append(f"💵 Доступно: {order.available} USDT")
+        lines.append(f"💵 Доступно: {order.available} {escape(order.crypto_code)}")
 
     if order.orders_count is not None:
         lines.append(f"📊 Угоди: {order.orders_count}")
@@ -157,8 +196,14 @@ def build_binance_order_url(ad: dict) -> str | None:
     return BINANCE_P2P_AD_URL.format(adv_no=adv_no)
 
 
-def build_okx_order_url(ad: dict, side: str) -> str | None:
-    base_url = OKX_P2P_MARKET_URLS.get(side)
+def build_okx_order_url(
+    ad: dict,
+    side: str,
+    *,
+    asset: str = "USDT",
+    fiat: str = "UAH",
+) -> str | None:
+    base_url = build_okx_market_url(side, asset=asset, fiat=fiat)
 
     if not base_url:
         return None
@@ -171,10 +216,19 @@ def build_okx_order_url(ad: dict, side: str) -> str | None:
     return f"{base_url}?id={quote(str(order_id))}"
 
 
+def build_okx_market_url(side: str, *, asset: str = "USDT", fiat: str = "UAH") -> str | None:
+    if side not in OKX_P2P_MARKET_URLS:
+        return None
+
+    action = "buy" if side == "sell" else "sell"
+
+    return f"https://www.okx.com/p2p-markets/{fiat.lower()}/{action}-{asset.lower()}"
+
+
 def format_binance_payment_methods(methods: list[dict]) -> str:
     names = []
 
-    for method in methods[:3]:
+    for method in methods:
         name = (
             method.get("tradeMethodShortName")
             or method.get("tradeMethodName")
@@ -186,6 +240,10 @@ def format_binance_payment_methods(methods: list[dict]) -> str:
             names.append(str(name))
 
     return ", ".join(names)
+
+
+def format_okx_payment_methods(methods: list[str]) -> str:
+    return ", ".join(str(method) for method in methods if method)
 
 
 def format_okx_rating(ad: dict) -> str | None:

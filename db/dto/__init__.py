@@ -27,6 +27,17 @@ from .p2p import (
     P2PDescriptionClassification,
     P2PFilterSettings,
     P2POrderMessage,
+    P2PUserPair,
+)
+from .payment_method import (
+    COMMON_PAYMENT_METHOD_OPTIONS,
+    PAYMENT_METHOD_OPTIONS_BY_FIAT,
+    PaymentMethodOption,
+    PaymentMethodUpsertResult,
+    UserPaymentMethodOption,
+    UserPaymentMethodToggleResult,
+    get_payment_method_option,
+    get_payment_method_options,
 )
 from .rbac import (
     PERMISSION_EDIT_P2P_FILTERS,
@@ -72,6 +83,15 @@ __all__ = [
     "P2PDescriptionClassification",
     "P2PFilterSettings",
     "P2POrderMessage",
+    "P2PUserPair",
+    "COMMON_PAYMENT_METHOD_OPTIONS",
+    "PAYMENT_METHOD_OPTIONS_BY_FIAT",
+    "PaymentMethodOption",
+    "PaymentMethodUpsertResult",
+    "UserPaymentMethodOption",
+    "UserPaymentMethodToggleResult",
+    "get_payment_method_option",
+    "get_payment_method_options",
     "PERMISSION_EDIT_P2P_FILTERS",
     "PERMISSION_MANAGE_CURRENCIES",
     "PERMISSION_MANAGE_EXCHANGES",
