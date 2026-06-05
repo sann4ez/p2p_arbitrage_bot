@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import logging
 
 from aiogram import Bot, Dispatcher
@@ -7,6 +8,7 @@ from config import Config
 
 from db.bootstrap import bootstrap_database
 from handlers import register_routes
+from tasks.statistics_scanner import run_global_statistics_scheduler
 
 logging.basicConfig(
     level=getattr(logging, Config.LOG_LEVEL, logging.INFO),
@@ -21,7 +23,15 @@ async def main():
 
     register_routes(dp)
 
-    await dp.start_polling(bot)
+    statistics_task = asyncio.create_task(run_global_statistics_scheduler())
+
+    try:
+        await dp.start_polling(bot)
+    finally:
+        statistics_task.cancel()
+
+        with contextlib.suppress(asyncio.CancelledError):
+            await statistics_task
 
 if __name__ == "__main__":
     try:

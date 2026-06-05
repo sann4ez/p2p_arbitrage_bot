@@ -19,8 +19,10 @@ DEFAULT_OPENAI_P2P_CLASSIFIER_TIMEOUT = 20
 DEFAULT_OPENAI_P2P_CLASSIFIER_BATCH_SIZE = 10
 DEFAULT_OPENAI_P2P_CLASSIFIER_CONCURRENCY = 3
 DEFAULT_OPENAI_P2P_CLASSIFIER_SINGLE_BATCH = True
+DEFAULT_OPENAI_P2P_CLASSIFICATION_FAILURE_CACHE_TTL = 0
 DEFAULT_OPENAI_FILE_SEARCH_MAX_RESULTS = 3
 MAX_DESCRIPTION_CHARS = 2000
+P2P_CLASSIFIER_PROMPT_VERSION = "accounts-risk-v1"
 P2P_CLASSIFIER_INSTRUCTIONS = (
     "Classify three P2P description risks: split payments, third-party payments, "
     "and Monobank jar/banka payments. Set monobank_jar_payments=true only when "
@@ -37,6 +39,14 @@ P2P_CLASSIFIER_INSTRUCTIONS = (
     "Поверни true лише коли це явно дозволено або явно вимагається. "
     "Для split_payments вважай явними фрази на кшталт 'платежей на поступление будет от 4+', "
     "'по 300 грн', 'оплата частями', 'несколько переводов'. "
+    "Також вважай split_payments=true для формулювань, де оплата/зарахування/переказ "
+    "може бути з декількох рахунків, кількох карток, різних банківських рахунків або "
+    "кількох джерел, зокрема через ліміти банку чи НБУ. "
+    "Для third_party_payments вважай true, якщо текст допускає оплату з декількох "
+    "рахунків/карток/джерел і явно не уточнює, що всі вони належать тому самому власнику "
+    "акаунта. Фрази на кшталт 'оплата може бути з декількох рахунків', "
+    "'платеж может быть с нескольких счетов', 'payment may come from several accounts' "
+    "означають split_payments=true і third_party_payments=true. "
     "Якщо текст це забороняє, наприклад 'не приймаю від 3-х осіб' або 'одним платежем', "
     "поверни false. Фрази 'переказ тільки з особистої картки', "
     "'не приймаю платежі від третіх осіб', 'only own card' означають "
@@ -77,12 +87,13 @@ async def classify_p2p_descriptions(
         cached_failures_count,
     ) = split_cached_classifications(prepared)
     logger.info(
-        "OpenAI P2P classifier cache: items=%s cached=%s cached_failures=%s missing=%s ttl=%ss",
+        "OpenAI P2P classifier cache: items=%s cached=%s stale_failures=%s missing=%s ttl=%ss failure_ttl=%ss",
         len(prepared),
         len(cached_classifications),
         cached_failures_count,
         len(missing_items),
         get_classifier_cache_ttl_seconds(),
+        get_classifier_failure_cache_ttl_seconds(),
     )
 
     if not missing_items:
@@ -255,9 +266,18 @@ def build_responses_payload(items: list[dict]) -> dict:
                     "split_payments means the merchant allows, requires, or warns that one "
                     "order may be paid/credited by several payments, transfers, receipts, "
                     "or incoming deposits. Treat 'платежей на поступление будет от 4+' "
-                    "as split_payments=true. "
+                    "as split_payments=true. Also treat payment/transfer/crediting from "
+                    "several accounts, several cards, different bank accounts, or several "
+                    "sources as split_payments=true, especially phrases like "
+                    "'оплата може бути з декількох рахунків', "
+                    "'платеж может быть с нескольких счетов', "
+                    "'payment may come from several accounts', or references to bank/NBU "
+                    "limits causing payments from multiple accounts. "
                     "third_party_payments means the merchant allows or requires payment from "
                     "a person/bank/card/account whose name is different from the account owner. "
+                    "If a description allows payment from several accounts/cards/sources and "
+                    "does not explicitly say all of them belong to the same account owner, set "
+                    "third_party_payments=true. "
                     "monobank_jar_payments means the merchant asks for payment through a "
                     "Monobank jar/banka or a jar link, including Monobank savings jar "
                     "instructions. "
@@ -458,11 +478,15 @@ def split_cached_classifications(
 
     for item in items:
         description = item["description"]
-        cached = _classification_cache.get(description)
+        cache_key = build_classification_cache_key(description)
+        cached = _classification_cache.get(cache_key)
 
         if cached and cached.expires_at > now:
             if cached.classification is None:
                 cached_failures_count += 1
+                if get_classifier_failure_cache_ttl_seconds() <= 0:
+                    _classification_cache.pop(cache_key, None)
+                    missing_items.append(item)
             else:
                 cached_classifications[item["index"]] = copy.deepcopy(
                     cached.classification
@@ -470,7 +494,7 @@ def split_cached_classifications(
             continue
 
         if cached:
-            _classification_cache.pop(description, None)
+            _classification_cache.pop(cache_key, None)
 
         missing_items.append(item)
 
@@ -499,9 +523,11 @@ def cache_classifications(
         if not description:
             continue
 
-        _classification_cache[description] = ClassificationCacheEntry(
-            classification=copy.deepcopy(classification),
-            expires_at=expires_at,
+        _classification_cache[build_classification_cache_key(description)] = (
+            ClassificationCacheEntry(
+                classification=copy.deepcopy(classification),
+                expires_at=expires_at,
+            )
         )
         stored += 1
 
@@ -516,7 +542,7 @@ def cache_classification_failures(
     items: list[dict],
     classifications: dict[int, P2PDescriptionClassification] | None = None,
 ):
-    ttl_seconds = get_classifier_cache_ttl_seconds()
+    ttl_seconds = get_classifier_failure_cache_ttl_seconds()
 
     if ttl_seconds <= 0:
         return
@@ -534,9 +560,11 @@ def cache_classification_failures(
         if not description:
             continue
 
-        _classification_cache[description] = ClassificationCacheEntry(
-            classification=None,
-            expires_at=expires_at,
+        _classification_cache[build_classification_cache_key(description)] = (
+            ClassificationCacheEntry(
+                classification=None,
+                expires_at=expires_at,
+            )
         )
         stored += 1
 
@@ -571,6 +599,23 @@ def normalize_description(description: str | None) -> str:
     )
 
     return text[:MAX_DESCRIPTION_CHARS]
+
+
+def build_classification_cache_key(description: str) -> str:
+    return f"{P2P_CLASSIFIER_PROMPT_VERSION}:{description}"
+
+
+def get_classifier_failure_cache_ttl_seconds() -> float:
+    return max(
+        0.0,
+        float(
+            getattr(
+                Config,
+                "OPENAI_P2P_CLASSIFICATION_FAILURE_CACHE_TTL_SECONDS",
+                DEFAULT_OPENAI_P2P_CLASSIFICATION_FAILURE_CACHE_TTL,
+            )
+        ),
+    )
 
 
 def parse_confidence(value) -> float:

@@ -60,6 +60,7 @@ async def get_cached_p2p_orders(
     rows: int,
     pair_key: str | None = None,
     fetcher: Callable[[], Awaitable[list[dict]]],
+    on_fresh: Callable[[list[dict]], Awaitable[None]] | None = None,
 ) -> list[dict]:
     pair_part = pair_key or "default"
     cache_key = f"p2p-orders:{exchange}:{direction}:{pair_part}:{rows}"
@@ -69,6 +70,7 @@ async def get_cached_p2p_orders(
         exchange=exchange,
         ttl_seconds=get_orders_cache_ttl_seconds(),
         fetcher=fetcher,
+        on_fresh=on_fresh,
     )
 
     logger.info(
@@ -165,6 +167,7 @@ async def get_or_fetch_cache(
     ttl_seconds: float,
     fetcher: Callable[[], Awaitable],
     cache_empty: bool = True,
+    on_fresh: Callable[[object], Awaitable[None]] | None = None,
 ):
     cached_value = await get_cached_value(cache_key)
 
@@ -188,6 +191,9 @@ async def get_or_fetch_cache(
         )
         await wait_for_global_cooldown(exchange)
         value = await fetcher()
+
+        if on_fresh and value:
+            await on_fresh(copy.deepcopy(value))
 
         if cache_empty or value:
             await set_cached_value(cache_key, value, ttl_seconds)

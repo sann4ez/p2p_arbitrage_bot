@@ -124,6 +124,15 @@ async def filter_orders_by_description(
     classifications = await classify_p2p_descriptions(descriptions)
 
     if not classifications:
+        if descriptions_count > 0:
+            logger.warning(
+                "P2P description filter GPT unavailable; fail closed: exchange=%s input=%s descriptions=%s reason=no_classifications",
+                exchange,
+                len(gpt_orders),
+                descriptions_count,
+            )
+            return []
+
         fallback_orders = (
             gpt_orders
             if mode == DESCRIPTION_CHECK_REGEX_GPT

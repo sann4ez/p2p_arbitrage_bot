@@ -14,6 +14,13 @@ class ScanBatch(Base):
         ForeignKey("exchanges.id", ondelete="CASCADE"),
         index=True,
     )
+    user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    scope: Mapped[str] = mapped_column(String(20), default="filter", index=True)
+    filter_hash: Mapped[str] = mapped_column(String(64), default="default", index=True)
     status: Mapped[str] = mapped_column(String(30), default="running")
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     started_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)

@@ -55,6 +55,7 @@ from .rbac import (
     ROLE_SUPER_ADMIN,
     ROLE_USER,
 )
+from .statistics import P2PPriceStatisticView
 
 __all__ = [
     "CURRENCY_TYPE_CRYPTO",
@@ -92,6 +93,7 @@ __all__ = [
     "UserPaymentMethodToggleResult",
     "get_payment_method_option",
     "get_payment_method_options",
+    "P2PPriceStatisticView",
     "PERMISSION_EDIT_P2P_FILTERS",
     "PERMISSION_MANAGE_CURRENCIES",
     "PERMISSION_MANAGE_EXCHANGES",

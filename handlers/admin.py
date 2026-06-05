@@ -1,3 +1,4 @@
+import asyncio
 from html import escape
 
 from aiogram import F, Router, types
@@ -5,11 +6,13 @@ from aiogram.filters import StateFilter
 from aiogram.fsm.context import FSMContext
 
 from db.base import AsyncSessionLocal
+from db.models import FiatCurrency, PaymentMethod
 from db.dto import (
     CURRENCY_TYPE_CRYPTO,
     CURRENCY_TYPE_FIAT,
     PERMISSION_MANAGE_CURRENCIES,
     PERMISSION_MANAGE_PAYMENT_METHODS,
+    PERMISSION_RUN_SCANNER,
     PERMISSION_VIEW_ADMIN_PANEL,
     get_currency_option,
     get_payment_method_option,
@@ -22,21 +25,43 @@ from keyboards.menu import (
     BTN_ADMIN_CURRENCIES,
     BTN_ADMIN_PANEL,
     BTN_ADMIN_PAYMENT_METHODS,
+    BTN_ADMIN_STATISTICS,
     BTN_BACK,
     BTN_LIST_CURRENCIES,
+    BTN_STATISTICS,
+    CB_ADMIN_STATS_BANK_FIAT_PREFIX,
+    CB_ADMIN_STATS_BANK_TOGGLE_PREFIX,
+    CB_ADMIN_STATS_BANKS_MENU,
+    CB_ADMIN_STATS_EXCHANGE_TOGGLE_PREFIX,
+    CB_ADMIN_STATS_EXCHANGES_MENU,
+    CB_ADMIN_STATS_FILTER_PREFIX,
+    CB_ADMIN_STATS_MENU,
+    CB_ADMIN_STATS_PAY_PREFIX,
+    CB_ADMIN_STATS_RESET,
+    CB_ADMIN_STATS_RUN,
+    CB_ADMIN_STATS_SET_PREFIX,
+    CB_ADMIN_STATS_TOGGLE_PREFIX,
     CB_ADMIN_CURRENCIES_MENU,
     CB_ADMIN_CURRENCY_ADD_PREFIX,
     CB_ADMIN_PAYMENT_ADD_PREFIX,
     CB_ADMIN_PAYMENT_FIAT_PREFIX,
     CB_ADMIN_PAYMENT_FIATS_MENU,
+    admin_statistics_bank_fiats_inline_kb,
+    admin_statistics_bank_methods_inline_kb,
+    admin_statistics_exchanges_inline_kb,
+    admin_statistics_inline_kb,
     admin_currency_options_inline_kb,
     admin_currencies_kb,
     admin_payment_fiats_inline_kb,
     admin_payment_options_inline_kb,
+    p2p_filter_values_inline_kb,
 )
 from services.currency_service import CurrencyService
 from services.menu_service import admin_menu_for_user, root_menu_for_user
 from services.payment_method_service import PaymentMethodService
+from services.p2p_filters import filters_summary
+from services.statistics_settings_service import StatisticsSettingsService
+from tasks.statistics_scanner import run_global_statistics_scan_once
 
 router = Router()
 
@@ -101,6 +126,19 @@ async def payment_methods_back_to_admin(message: types.Message, state: FSMContex
 
 
 @router.message(
+    StateFilter(AdminMenu.statistics, AdminMenu.statistics_banks),
+    F.text == BTN_BACK,
+)
+async def statistics_back_to_admin(message: types.Message, state: FSMContext):
+    await state.set_state(AdminMenu.panel)
+
+    await message.answer(
+        "Адмін панель:",
+        reply_markup=await admin_menu_for_user(message.from_user.id),
+    )
+
+
+@router.message(
     StateFilter(AdminMenu.panel),
     F.text == BTN_ADMIN_PAYMENT_METHODS,
     PermissionRequired(PERMISSION_MANAGE_PAYMENT_METHODS),
@@ -113,6 +151,27 @@ async def admin_payment_methods(message: types.Message, state: FSMContext):
 @router.message(StateFilter(AdminMenu.panel), F.text == BTN_ADMIN_PAYMENT_METHODS)
 async def admin_payment_methods_forbidden(message: types.Message):
     await message.answer("У вас немає доступу до керування методами оплати.")
+
+
+@router.message(
+    StateFilter(AdminMenu.panel),
+    F.text == BTN_ADMIN_STATISTICS,
+    PermissionRequired(PERMISSION_RUN_SCANNER),
+)
+@router.message(
+    StateFilter(AdminMenu.panel),
+    F.text == BTN_STATISTICS,
+    PermissionRequired(PERMISSION_RUN_SCANNER),
+)
+async def admin_statistics(message: types.Message, state: FSMContext):
+    await state.set_state(AdminMenu.statistics)
+    await send_admin_statistics_menu(message)
+
+
+@router.message(StateFilter(AdminMenu.panel), F.text == BTN_ADMIN_STATISTICS)
+@router.message(StateFilter(AdminMenu.panel), F.text == BTN_STATISTICS)
+async def admin_statistics_forbidden(message: types.Message):
+    await message.answer("У вас немає доступу до налаштувань статистики.")
 
 
 @router.message(
@@ -310,6 +369,404 @@ async def add_payment_method_from_catalog(
 @router.callback_query(F.data.startswith(CB_ADMIN_PAYMENT_ADD_PREFIX))
 async def add_payment_method_forbidden(callback: types.CallbackQuery):
     await callback.answer("У вас немає доступу до методів оплати.", show_alert=True)
+
+
+@router.callback_query(
+    F.data == CB_ADMIN_STATS_MENU,
+    PermissionRequired(PERMISSION_RUN_SCANNER),
+)
+async def admin_statistics_menu_callback(callback: types.CallbackQuery, state: FSMContext):
+    await state.set_state(AdminMenu.statistics)
+    await callback.answer()
+    await edit_admin_statistics_menu(callback)
+
+
+@router.callback_query(
+    F.data.startswith(CB_ADMIN_STATS_TOGGLE_PREFIX),
+    PermissionRequired(PERMISSION_RUN_SCANNER),
+)
+async def admin_statistics_toggle(callback: types.CallbackQuery, state: FSMContext):
+    field = callback.data[len(CB_ADMIN_STATS_TOGGLE_PREFIX):]
+
+    async with AsyncSessionLocal() as session:
+        await StatisticsSettingsService(session).toggle_bool(field)
+
+    await state.set_state(AdminMenu.statistics)
+    await callback.answer("Оновлено")
+    await edit_admin_statistics_menu(callback)
+
+
+@router.callback_query(
+    F.data.startswith(CB_ADMIN_STATS_FILTER_PREFIX),
+    PermissionRequired(PERMISSION_RUN_SCANNER),
+)
+async def admin_statistics_filter(callback: types.CallbackQuery, state: FSMContext):
+    screen = callback.data[len(CB_ADMIN_STATS_FILTER_PREFIX):]
+
+    async with AsyncSessionLocal() as session:
+        settings = await StatisticsSettingsService(session).get_filter_settings()
+
+    await state.set_state(AdminMenu.statistics)
+    await callback.answer()
+
+    if callback.message:
+        await callback.message.edit_text(
+            build_admin_statistics_filter_screen_text(screen),
+            reply_markup=p2p_filter_values_inline_kb(
+                settings,
+                screen,
+                set_prefix=CB_ADMIN_STATS_SET_PREFIX,
+                pay_prefix=CB_ADMIN_STATS_PAY_PREFIX,
+                back_callback=CB_ADMIN_STATS_MENU,
+            ),
+        )
+
+
+@router.callback_query(
+    F.data.startswith(CB_ADMIN_STATS_SET_PREFIX),
+    PermissionRequired(PERMISSION_RUN_SCANNER),
+)
+async def admin_statistics_set_filter(callback: types.CallbackQuery, state: FSMContext):
+    field, raw_value = parse_admin_statistics_set_callback(callback.data or "")
+
+    if not field or raw_value is None:
+        await callback.answer("Не вдалося прочитати значення.", show_alert=True)
+        return
+
+    async with AsyncSessionLocal() as session:
+        await StatisticsSettingsService(session).set_filter_value(field, raw_value)
+
+    await state.set_state(AdminMenu.statistics)
+    await callback.answer("Збережено")
+    await edit_admin_statistics_menu(callback)
+
+
+@router.callback_query(
+    F.data.startswith(CB_ADMIN_STATS_PAY_PREFIX),
+    PermissionRequired(PERMISSION_RUN_SCANNER),
+)
+async def admin_statistics_toggle_payment_category(
+    callback: types.CallbackQuery,
+    state: FSMContext,
+):
+    category = callback.data[len(CB_ADMIN_STATS_PAY_PREFIX):]
+
+    async with AsyncSessionLocal() as session:
+        settings = await StatisticsSettingsService(session).toggle_payment_category(category)
+
+    await state.set_state(AdminMenu.statistics)
+    await callback.answer("Оновлено")
+
+    if callback.message:
+        await callback.message.edit_text(
+            build_admin_statistics_filter_screen_text("pay_methods"),
+            reply_markup=p2p_filter_values_inline_kb(
+                settings,
+                "pay_methods",
+                set_prefix=CB_ADMIN_STATS_SET_PREFIX,
+                pay_prefix=CB_ADMIN_STATS_PAY_PREFIX,
+                back_callback=CB_ADMIN_STATS_MENU,
+            ),
+        )
+
+
+@router.callback_query(
+    F.data == CB_ADMIN_STATS_RESET,
+    PermissionRequired(PERMISSION_RUN_SCANNER),
+)
+async def admin_statistics_reset(callback: types.CallbackQuery, state: FSMContext):
+    async with AsyncSessionLocal() as session:
+        await StatisticsSettingsService(session).reset_filters()
+
+    await state.set_state(AdminMenu.statistics)
+    await callback.answer("Фільтри скинуто")
+    await edit_admin_statistics_menu(callback)
+
+
+@router.callback_query(
+    F.data == CB_ADMIN_STATS_RUN,
+    PermissionRequired(PERMISSION_RUN_SCANNER),
+)
+async def admin_statistics_run_now(callback: types.CallbackQuery):
+    asyncio.create_task(run_global_statistics_scan_once())
+    await callback.answer("Скан статистики запущено у фоні", show_alert=True)
+
+
+@router.callback_query(
+    F.data == CB_ADMIN_STATS_EXCHANGES_MENU,
+    PermissionRequired(PERMISSION_RUN_SCANNER),
+)
+async def admin_statistics_exchanges(callback: types.CallbackQuery, state: FSMContext):
+    await state.set_state(AdminMenu.statistics)
+    await callback.answer()
+    await edit_admin_statistics_exchanges(callback)
+
+
+@router.callback_query(
+    F.data.startswith(CB_ADMIN_STATS_EXCHANGE_TOGGLE_PREFIX),
+    PermissionRequired(PERMISSION_RUN_SCANNER),
+)
+async def admin_statistics_exchange_toggle(
+    callback: types.CallbackQuery,
+    state: FSMContext,
+):
+    field = callback.data[len(CB_ADMIN_STATS_EXCHANGE_TOGGLE_PREFIX):]
+
+    async with AsyncSessionLocal() as session:
+        await StatisticsSettingsService(session).toggle_bool(field)
+
+    await state.set_state(AdminMenu.statistics)
+    await callback.answer("Оновлено")
+    await edit_admin_statistics_exchanges(callback)
+
+
+@router.callback_query(
+    F.data == CB_ADMIN_STATS_BANKS_MENU,
+    PermissionRequired(PERMISSION_RUN_SCANNER),
+)
+async def admin_statistics_banks(callback: types.CallbackQuery, state: FSMContext):
+    await state.set_state(AdminMenu.statistics_banks)
+    await callback.answer()
+    await edit_admin_statistics_bank_fiats(callback)
+
+
+@router.callback_query(
+    F.data.startswith(CB_ADMIN_STATS_BANK_FIAT_PREFIX),
+    PermissionRequired(PERMISSION_RUN_SCANNER),
+)
+async def admin_statistics_bank_fiat(callback: types.CallbackQuery, state: FSMContext):
+    fiat_currency_id = parse_admin_statistics_bank_fiat_callback(callback.data or "")
+
+    if not fiat_currency_id:
+        await callback.answer("Не вдалося прочитати валюту.", show_alert=True)
+        return
+
+    await state.set_state(AdminMenu.statistics_banks)
+    await callback.answer()
+    await edit_admin_statistics_bank_methods(callback, fiat_currency_id)
+
+
+@router.callback_query(
+    F.data.startswith(CB_ADMIN_STATS_BANK_TOGGLE_PREFIX),
+    PermissionRequired(PERMISSION_RUN_SCANNER),
+)
+async def admin_statistics_bank_toggle(callback: types.CallbackQuery, state: FSMContext):
+    payment_method_id = parse_admin_statistics_bank_toggle_callback(callback.data or "")
+
+    if not payment_method_id:
+        await callback.answer("Не вдалося прочитати банк.", show_alert=True)
+        return
+
+    async with AsyncSessionLocal() as session:
+        service = StatisticsSettingsService(session)
+        method = await session.get(PaymentMethod, payment_method_id)
+
+        await service.toggle_payment_method(payment_method_id)
+
+        fiat_currency_id = method.fiat_currency_id if method else None
+
+    await state.set_state(AdminMenu.statistics_banks)
+    await callback.answer("Оновлено")
+
+    if fiat_currency_id:
+        await edit_admin_statistics_bank_methods(callback, fiat_currency_id)
+    else:
+        await edit_admin_statistics_bank_fiats(callback)
+
+
+async def send_admin_statistics_menu(message: types.Message):
+    async with AsyncSessionLocal() as session:
+        service = StatisticsSettingsService(session)
+        settings = await service.get_or_create_settings()
+        filter_settings = await service.get_filter_settings()
+        selected_method_ids = await service.list_selected_payment_method_ids()
+        crypto_currencies = await service.list_crypto_currencies()
+        fiat_currencies = await service.list_fiat_currencies()
+
+    await message.answer(
+        build_admin_statistics_text(
+            settings,
+            filter_settings,
+            selected_method_ids,
+            crypto_currencies,
+            fiat_currencies,
+        ),
+        reply_markup=admin_statistics_inline_kb(settings, filter_settings),
+    )
+
+
+async def edit_admin_statistics_menu(callback: types.CallbackQuery):
+    async with AsyncSessionLocal() as session:
+        service = StatisticsSettingsService(session)
+        settings = await service.get_or_create_settings()
+        filter_settings = await service.get_filter_settings()
+        selected_method_ids = await service.list_selected_payment_method_ids()
+        crypto_currencies = await service.list_crypto_currencies()
+        fiat_currencies = await service.list_fiat_currencies()
+
+    if callback.message:
+        await callback.message.edit_text(
+            build_admin_statistics_text(
+                settings,
+                filter_settings,
+                selected_method_ids,
+                crypto_currencies,
+                fiat_currencies,
+            ),
+            reply_markup=admin_statistics_inline_kb(settings, filter_settings),
+        )
+
+
+async def edit_admin_statistics_exchanges(callback: types.CallbackQuery):
+    async with AsyncSessionLocal() as session:
+        settings = await StatisticsSettingsService(session).get_or_create_settings()
+
+    if callback.message:
+        await callback.message.edit_text(
+            "<b>Біржі для глобальної статистики</b>\n\n"
+            "Увімкніть біржі, які мають скануватись автоматично для загальної статистики.",
+            reply_markup=admin_statistics_exchanges_inline_kb(settings),
+        )
+
+
+async def edit_admin_statistics_bank_fiats(callback: types.CallbackQuery):
+    async with AsyncSessionLocal() as session:
+        service = StatisticsSettingsService(session)
+        fiat_currencies = await service.list_fiat_currencies()
+        selected_ids = await service.list_selected_payment_method_ids()
+        selected_counts = {}
+
+        for fiat in fiat_currencies:
+            methods = await service.list_payment_methods_for_fiat(fiat.id)
+            selected_counts[fiat.id] = sum(
+                1 for method in methods if method.id in selected_ids
+            )
+
+    if callback.message:
+        await callback.message.edit_text(
+            "<b>Банки для глобальної статистики</b>\n\n"
+            "Якщо для валюти нічого не обрано, статистика не обмежується банками цієї валюти.",
+            reply_markup=admin_statistics_bank_fiats_inline_kb(
+                fiat_currencies,
+                selected_counts,
+            ),
+        )
+
+
+async def edit_admin_statistics_bank_methods(
+    callback: types.CallbackQuery,
+    fiat_currency_id: int,
+):
+    async with AsyncSessionLocal() as session:
+        service = StatisticsSettingsService(session)
+        fiat = await session.get(FiatCurrency, fiat_currency_id)
+
+        if not fiat:
+            await callback.answer("Фіатна валюта не знайдена.", show_alert=True)
+            return
+
+        methods = await service.list_payment_methods_for_fiat(fiat.id)
+        selected_ids = await service.list_selected_payment_method_ids()
+
+    if callback.message:
+        await callback.message.edit_text(
+            f"<b>Банки для статистики · {escape(fiat.code)}</b>\n\n"
+            "Увімкніть банки, які мають враховуватись у глобальній статистиці.",
+            reply_markup=admin_statistics_bank_methods_inline_kb(
+                methods,
+                selected_ids,
+            ),
+        )
+
+
+def build_admin_statistics_text(
+    settings,
+    filter_settings,
+    selected_method_ids: set[int],
+    crypto_currencies,
+    fiat_currencies,
+) -> str:
+    exchanges = []
+
+    if settings.scan_binance:
+        exchanges.append("Binance")
+
+    if settings.scan_okx:
+        exchanges.append("OKX")
+
+    directions = []
+
+    if settings.scan_buy:
+        directions.append("купівля крипти")
+
+    if settings.scan_sell:
+        directions.append("продаж крипти")
+
+    pairs_count = len(crypto_currencies) * len(fiat_currencies)
+
+    return (
+        "<b>Глобальна статистика P2P</b>\n\n"
+        f"Стан: <b>{'увімкнено' if settings.is_enabled else 'вимкнено'}</b>\n"
+        f"Інтервал: <b>{settings.interval_seconds // 60}</b> хв\n"
+        f"Біржі: <b>{escape(', '.join(exchanges) or 'немає')}</b>\n"
+        f"Напрямки: <b>{escape(', '.join(directions) or 'немає')}</b>\n"
+        f"Пар для скану: <b>{pairs_count}</b>\n"
+        f"Банків обрано: <b>{len(selected_method_ids)}</b>\n\n"
+        f"{filters_summary(filter_settings)}\n\n"
+        "Погодинний скан формує загальну статистику по всіх доданих crypto/fiat парах."
+    )
+
+
+def build_admin_statistics_filter_screen_text(screen: str) -> str:
+    titles = {
+        "time": "Час угоди",
+        "trades": "Кількість угод",
+        "rating": "Оцінка мерчанта",
+        "completion": "Виконання угод",
+        "pay_methods": "Методи оплати",
+        "third_party": "Треті особи",
+        "split": "Кілька платежів",
+        "mono_jar": "Monobank Банка",
+        "desc": "Перевірка опису",
+        "display": "Кількість виводу",
+        "candidates": "Кандидати для перевірки",
+    }
+    title = titles.get(screen, "Фільтр статистики")
+
+    return (
+        f"<b>{escape(title)}</b>\n\n"
+        "Оберіть значення для щогодинного фільтра глобальної статистики."
+    )
+
+
+def parse_admin_statistics_set_callback(
+    callback_data: str,
+) -> tuple[str | None, str | None]:
+    payload = callback_data[len(CB_ADMIN_STATS_SET_PREFIX):]
+    parts = payload.split(":", 1)
+
+    if len(parts) != 2:
+        return None, None
+
+    return parts[0], parts[1]
+
+
+def parse_admin_statistics_bank_fiat_callback(callback_data: str) -> int | None:
+    payload = callback_data[len(CB_ADMIN_STATS_BANK_FIAT_PREFIX):]
+
+    try:
+        return int(payload)
+    except ValueError:
+        return None
+
+
+def parse_admin_statistics_bank_toggle_callback(callback_data: str) -> int | None:
+    payload = callback_data[len(CB_ADMIN_STATS_BANK_TOGGLE_PREFIX):]
+
+    try:
+        return int(payload)
+    except ValueError:
+        return None
 
 
 def build_currencies_list_text(
