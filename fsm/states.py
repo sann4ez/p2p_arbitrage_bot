@@ -12,9 +12,12 @@ class AppMenu(StatesGroup):
     p2p_filters = State()
     p2p_pairs = State()
     payment_methods = State()
+    statistics = State()
 
 
 class AdminMenu(StatesGroup):
     panel = State()
     currencies = State()
     payment_methods = State()
+    statistics = State()
+    statistics_banks = State()

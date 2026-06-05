@@ -5,8 +5,10 @@ from aiogram import F, Router, types
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import StateFilter
 from aiogram.fsm.context import FSMContext
+from aiogram.types import BufferedInputFile
 
 from db.base import AsyncSessionLocal
+from db.dto import P2PUserPair
 from fsm.states import AppMenu
 from keyboards.menu import (
     BTN_BACK,
@@ -34,10 +36,18 @@ from keyboards.menu import (
     BTN_P2P_FILTERS,
     BTN_P2P_PAIRS,
     BTN_RESET_FILTERS,
+    BTN_STATISTICS,
     CB_P2P_PAIR_BACK,
     CB_P2P_PAIR_CRYPTO_PREFIX,
     CB_P2P_PAIR_NOOP,
     CB_P2P_PAIR_TOGGLE_PREFIX,
+    CB_STATS_PAIR_BACK,
+    CB_STATS_PAIR_CRYPTO_PREFIX,
+    CB_STATS_PAIR_SELECT_PREFIX,
+    CB_STATS_DIRECTION_PREFIX,
+    CB_STATS_EXCHANGE_PREFIX,
+    CB_STATS_PERIOD_PREFIX,
+    CB_STATS_SCOPE_PREFIX,
     BTN_USER_PAYMENT_METHODS,
     CB_USER_PAYMENT_BACK,
     CB_USER_PAYMENT_FIAT_PREFIX,
@@ -59,6 +69,12 @@ from keyboards.menu import (
     p2p_filters_inline_kb,
     p2p_pair_fiats_inline_kb,
     p2p_pairs_inline_kb,
+    statistics_direction_inline_kb,
+    statistics_exchange_inline_kb,
+    statistics_pair_cryptos_inline_kb,
+    statistics_pair_fiats_inline_kb,
+    statistics_period_inline_kb,
+    statistics_scope_inline_kb,
     user_payment_fiats_inline_kb,
     user_payment_methods_inline_kb,
 )
@@ -94,9 +110,42 @@ from services.p2p_filters import (
     toggle_payment_category,
     toggle_third_party_payments,
 )
+from services.p2p_exchange_drivers import (
+    P2P_DIRECTION_CRYPTO_TO_FIAT,
+    P2P_DIRECTION_FIAT_TO_CRYPTO,
+    get_p2p_exchange_driver,
+)
+from services.p2p_statistics_service import (
+    STAT_PERIOD_DAY,
+    STAT_PERIOD_LABELS,
+    STAT_PERIOD_TYPES,
+    STAT_SCOPE_FILTER,
+    STAT_SCOPE_GLOBAL,
+    build_statistics_filter_hash,
+    P2PStatisticsService,
+)
+from services.p2p_statistics_chart import (
+    build_p2p_statistics_caption,
+    render_p2p_statistics_chart,
+)
+from services.statistics_settings_service import StatisticsSettingsService
 from services.user_service import UserService
 
 router = Router()
+STATISTICS_HISTORY_PERIODS = 12
+STATISTICS_EXCHANGES = {"binance", "okx"}
+STATISTICS_DIRECTIONS = {
+    P2P_DIRECTION_FIAT_TO_CRYPTO,
+    P2P_DIRECTION_CRYPTO_TO_FIAT,
+}
+STATISTICS_EXCHANGE_LABELS = {
+    "binance": "Binance",
+    "okx": "OKX",
+}
+STATISTICS_DIRECTION_LABELS = {
+    P2P_DIRECTION_FIAT_TO_CRYPTO: "Фіат → Крипта",
+    P2P_DIRECTION_CRYPTO_TO_FIAT: "Крипта → Фіат",
+}
 
 FILTER_SCREEN_TEXTS = {
     FILTER_SCREEN_ORDER_TIME: (
@@ -193,11 +242,33 @@ async def cabinet_menu(message: types.Message, state: FSMContext):
     )
 
 
+@router.message(StateFilter(None), F.text == BTN_STATISTICS)
+async def statistics_menu(message: types.Message, state: FSMContext):
+    await state.set_state(AppMenu.statistics)
+    await clear_statistics_pair(state)
+    await send_statistics_pair_crypto_menu(message, state)
+
+
 @router.message(
-    StateFilter(AppMenu.p2p_filters, AppMenu.p2p_pairs, AppMenu.payment_methods),
+    StateFilter(
+        AppMenu.p2p_filters,
+        AppMenu.p2p_pairs,
+        AppMenu.payment_methods,
+        AppMenu.statistics,
+    ),
     F.text == BTN_BACK,
 )
 async def back_to_cabinet(message: types.Message, state: FSMContext):
+    current_state = await state.get_state()
+
+    if current_state == AppMenu.statistics.state:
+        await state.clear()
+        await message.answer(
+            "Головне меню:",
+            reply_markup=await root_menu_for_user(message.from_user.id),
+        )
+        return
+
     await state.set_state(AppMenu.cabinet)
 
     await message.answer(
@@ -254,6 +325,274 @@ async def p2p_filters(message: types.Message, state: FSMContext):
 async def p2p_pairs(message: types.Message, state: FSMContext):
     await state.set_state(AppMenu.p2p_pairs)
     await send_p2p_pairs_menu(message)
+
+
+@router.callback_query(StateFilter(AppMenu.statistics), F.data == CB_STATS_PAIR_BACK)
+async def statistics_pair_back(callback: types.CallbackQuery, state: FSMContext):
+    await edit_statistics_pair_crypto_menu(callback, state)
+
+
+@router.callback_query(
+    StateFilter(AppMenu.statistics),
+    F.data.startswith(CB_STATS_PAIR_CRYPTO_PREFIX),
+)
+async def statistics_pair_crypto_callback(
+    callback: types.CallbackQuery,
+    state: FSMContext,
+):
+    crypto_currency_id = parse_statistics_pair_crypto_callback(callback.data or "")
+
+    if not crypto_currency_id:
+        await callback.answer("Не вдалося прочитати стейбл", show_alert=True)
+        return
+
+    selected_pairs = await load_selected_p2p_pairs(callback.from_user.id)
+    crypto_pairs = filter_pairs_by_crypto(selected_pairs, crypto_currency_id)
+
+    if not crypto_pairs:
+        await callback.answer("Для цього стейбла немає обраних фіатів", show_alert=True)
+        return
+
+    await state.set_state(AppMenu.statistics)
+    await callback.answer(crypto_pairs[0].crypto_code)
+
+    if callback.message:
+        await safe_edit_callback_message(
+            callback,
+            build_statistics_pair_fiats_text(selected_pairs, crypto_currency_id),
+            statistics_pair_fiats_inline_kb(selected_pairs, crypto_currency_id),
+        )
+
+
+@router.callback_query(
+    StateFilter(AppMenu.statistics),
+    F.data.startswith(CB_STATS_PAIR_SELECT_PREFIX),
+)
+async def statistics_pair_select_callback(
+    callback: types.CallbackQuery,
+    state: FSMContext,
+):
+    crypto_currency_id, fiat_currency_id = parse_statistics_pair_select_callback(
+        callback.data or ""
+    )
+
+    if not crypto_currency_id or not fiat_currency_id:
+        await callback.answer("Не вдалося прочитати пару", show_alert=True)
+        return
+
+    pair = await load_selected_statistics_pair(
+        callback.from_user.id,
+        crypto_currency_id,
+        fiat_currency_id,
+    )
+
+    if not pair:
+        await callback.answer("Ця пара не обрана або вже недоступна", show_alert=True)
+        return
+
+    await set_statistics_pair(state, pair)
+    await callback.answer(pair.label)
+
+    if callback.message:
+        await replace_statistics_exchange_message(callback.message, pair)
+
+
+@router.callback_query(
+    StateFilter(AppMenu.statistics),
+    F.data.startswith(CB_STATS_EXCHANGE_PREFIX),
+)
+async def statistics_exchange_callback(
+    callback: types.CallbackQuery,
+    state: FSMContext,
+):
+    exchange, crypto_currency_id, fiat_currency_id = parse_statistics_exchange_callback(
+        callback.data or ""
+    )
+
+    if not exchange or not crypto_currency_id or not fiat_currency_id:
+        await callback.answer("Не вдалося прочитати біржу", show_alert=True)
+        return
+
+    pair = await load_selected_statistics_pair(
+        callback.from_user.id,
+        crypto_currency_id,
+        fiat_currency_id,
+    )
+
+    if not pair:
+        await callback.answer("Ця пара не обрана або вже недоступна", show_alert=True)
+        return
+
+    await set_statistics_exchange(state, exchange)
+    await callback.answer(format_statistics_exchange_label(exchange))
+
+    if callback.message:
+        await replace_statistics_direction_message(callback.message, pair, exchange)
+
+
+@router.callback_query(
+    StateFilter(AppMenu.statistics),
+    F.data.startswith(CB_STATS_DIRECTION_PREFIX),
+)
+async def statistics_direction_callback(
+    callback: types.CallbackQuery,
+    state: FSMContext,
+):
+    exchange, direction, crypto_currency_id, fiat_currency_id = (
+        parse_statistics_direction_callback(callback.data or "")
+    )
+
+    if not exchange or not direction or not crypto_currency_id or not fiat_currency_id:
+        await callback.answer("Не вдалося прочитати напрямок", show_alert=True)
+        return
+
+    pair = await load_selected_statistics_pair(
+        callback.from_user.id,
+        crypto_currency_id,
+        fiat_currency_id,
+    )
+
+    if not pair:
+        await callback.answer("Ця пара не обрана або вже недоступна", show_alert=True)
+        return
+
+    await set_statistics_direction(state, exchange, direction)
+    await callback.answer(format_statistics_direction_label(direction))
+
+    if callback.message:
+        await replace_statistics_scope_message(
+            callback.message,
+            state,
+            pair=pair,
+            exchange=exchange,
+            direction=direction,
+        )
+
+
+@router.callback_query(F.data.startswith(CB_STATS_PERIOD_PREFIX))
+async def statistics_period_callback(
+    callback: types.CallbackQuery,
+    state: FSMContext,
+):
+    scope, period_type, exchange, direction, crypto_currency_id, fiat_currency_id = (
+        parse_statistics_period_callback(callback.data or "")
+    )
+
+    if period_type not in STAT_PERIOD_TYPES or not is_supported_statistics_scope(scope):
+        await callback.answer("Не вдалося прочитати період", show_alert=True)
+        return
+
+    pair = await resolve_statistics_pair(
+        callback.from_user.id,
+        state,
+        crypto_currency_id,
+        fiat_currency_id,
+    )
+    exchange, direction = await resolve_statistics_market(
+        state,
+        exchange=exchange,
+        direction=direction,
+    )
+
+    if not pair:
+        await callback.answer("Спочатку оберіть пару для статистики", show_alert=True)
+        return
+
+    if not exchange or not direction:
+        await callback.answer("Спочатку оберіть біржу і напрямок", show_alert=True)
+        return
+
+    stats = await load_statistics_for_user(
+        callback.from_user.id,
+        scope,
+        period_type,
+        pair,
+        exchange,
+        direction,
+    )
+
+    await callback.answer(STAT_PERIOD_LABELS.get(period_type, period_type))
+
+    if callback.message:
+        await replace_statistics_message(
+            callback.message,
+            pair,
+            exchange,
+            direction,
+            stats,
+            period_type,
+            scope,
+        )
+
+
+@router.callback_query(F.data.startswith(CB_STATS_SCOPE_PREFIX))
+async def statistics_scope_callback(
+    callback: types.CallbackQuery,
+    state: FSMContext,
+):
+    scope, exchange, direction, crypto_currency_id, fiat_currency_id = (
+        parse_statistics_scope_callback(callback.data or "")
+    )
+    pair = await resolve_statistics_pair(
+        callback.from_user.id,
+        state,
+        crypto_currency_id,
+        fiat_currency_id,
+    )
+    exchange, direction = await resolve_statistics_market(
+        state,
+        exchange=exchange,
+        direction=direction,
+    )
+
+    if scope == "menu":
+        if pair and exchange and direction and callback.message:
+            await callback.answer()
+            await replace_statistics_scope_message(
+                callback.message,
+                state,
+                pair=pair,
+                exchange=exchange,
+                direction=direction,
+            )
+        else:
+            await edit_statistics_pair_crypto_menu(callback, state)
+
+        return
+
+    if not is_supported_statistics_scope(scope):
+        await callback.answer("Не вдалося прочитати тип статистики", show_alert=True)
+        return
+
+    if not pair:
+        await callback.answer("Спочатку оберіть пару для статистики", show_alert=True)
+        return
+
+    if not exchange or not direction:
+        await callback.answer("Спочатку оберіть біржу і напрямок", show_alert=True)
+        return
+
+    stats = await load_statistics_for_user(
+        callback.from_user.id,
+        scope,
+        STAT_PERIOD_DAY,
+        pair,
+        exchange,
+        direction,
+    )
+
+    await callback.answer(format_statistics_scope_title(scope))
+
+    if callback.message:
+        await replace_statistics_message(
+            callback.message,
+            pair,
+            exchange,
+            direction,
+            stats,
+            STAT_PERIOD_DAY,
+            scope,
+        )
 
 
 @router.message(F.text == BTN_USER_PAYMENT_METHODS)
@@ -578,6 +917,573 @@ async def send_p2p_pairs_menu(message: types.Message):
     )
 
 
+async def load_selected_p2p_pairs(telegram_id: int):
+    async with AsyncSessionLocal() as session:
+        service = P2PPairService(session)
+        return await service.list_selected_pairs(telegram_id)
+
+
+async def load_selected_statistics_pair(
+    telegram_id: int,
+    crypto_currency_id: int,
+    fiat_currency_id: int,
+):
+    selected_pairs = await load_selected_p2p_pairs(telegram_id)
+
+    return find_pair(selected_pairs, crypto_currency_id, fiat_currency_id)
+
+
+async def resolve_statistics_pair(
+    telegram_id: int,
+    state: FSMContext,
+    crypto_currency_id: int | None = None,
+    fiat_currency_id: int | None = None,
+):
+    if crypto_currency_id and fiat_currency_id:
+        pair = await load_selected_statistics_pair(
+            telegram_id,
+            crypto_currency_id,
+            fiat_currency_id,
+        )
+
+        if pair:
+            await set_statistics_pair(state, pair)
+
+        return pair
+
+    data = await state.get_data()
+    stored_crypto_id = data.get("statistics_pair_crypto_currency_id")
+    stored_fiat_id = data.get("statistics_pair_fiat_currency_id")
+
+    if stored_crypto_id and stored_fiat_id:
+        return await load_selected_statistics_pair(
+            telegram_id,
+            int(stored_crypto_id),
+            int(stored_fiat_id),
+        )
+
+    selected_pairs = await load_selected_p2p_pairs(telegram_id)
+
+    if len(selected_pairs) == 1:
+        await set_statistics_pair(state, selected_pairs[0])
+        return selected_pairs[0]
+
+    return None
+
+
+async def resolve_statistics_market(
+    state: FSMContext,
+    *,
+    exchange: str | None = None,
+    direction: str | None = None,
+) -> tuple[str | None, str | None]:
+    data = await state.get_data()
+    selected_exchange = normalize_statistics_exchange(
+        exchange or data.get("statistics_exchange")
+    )
+    selected_direction = normalize_statistics_direction(
+        direction or data.get("statistics_direction")
+    )
+
+    if selected_exchange and selected_direction:
+        await set_statistics_direction(state, selected_exchange, selected_direction)
+
+    return selected_exchange, selected_direction
+
+
+async def set_statistics_pair(state: FSMContext, pair):
+    await state.set_state(AppMenu.statistics)
+    await state.update_data(
+        statistics_pair_crypto_currency_id=pair.crypto_currency_id,
+        statistics_pair_fiat_currency_id=pair.fiat_currency_id,
+        statistics_pair_crypto_code=pair.crypto_code,
+        statistics_pair_fiat_code=pair.fiat_code,
+        statistics_exchange=None,
+        statistics_direction=None,
+    )
+
+
+async def set_statistics_exchange(state: FSMContext, exchange: str):
+    await state.set_state(AppMenu.statistics)
+    await state.update_data(
+        statistics_exchange=exchange,
+        statistics_direction=None,
+    )
+
+
+async def set_statistics_direction(
+    state: FSMContext,
+    exchange: str,
+    direction: str,
+):
+    await state.set_state(AppMenu.statistics)
+    await state.update_data(
+        statistics_exchange=exchange,
+        statistics_direction=direction,
+    )
+
+
+async def clear_statistics_pair(state: FSMContext):
+    await state.update_data(
+        statistics_pair_crypto_currency_id=None,
+        statistics_pair_fiat_currency_id=None,
+        statistics_pair_crypto_code=None,
+        statistics_pair_fiat_code=None,
+        statistics_exchange=None,
+        statistics_direction=None,
+    )
+
+
+async def send_statistics_pair_crypto_menu(
+    message: types.Message,
+    state: FSMContext,
+):
+    selected_pairs = await load_selected_p2p_pairs(message.from_user.id)
+
+    if not selected_pairs:
+        await message.answer(
+            "<b>Статистика P2P</b>\n\n"
+            "Поки немає обраних P2P-пар. Відкрийте Особистий кабінет -> Мої P2P пари "
+            "і оберіть хоча б одну пару."
+        )
+        return
+
+    if len(selected_pairs) == 1:
+        pair = selected_pairs[0]
+        await set_statistics_pair(state, pair)
+        await send_statistics_exchange_menu(message, pair)
+        return
+
+    await message.answer(
+        build_statistics_pair_cryptos_text(selected_pairs),
+        reply_markup=statistics_pair_cryptos_inline_kb(selected_pairs),
+    )
+
+
+async def edit_statistics_pair_crypto_menu(
+    callback: types.CallbackQuery,
+    state: FSMContext,
+):
+    selected_pairs = await load_selected_p2p_pairs(callback.from_user.id)
+
+    if not selected_pairs:
+        await clear_statistics_pair(state)
+        await callback.answer("Немає обраних P2P-пар", show_alert=True)
+        return
+
+    await callback.answer()
+    await clear_statistics_pair(state)
+
+    if len(selected_pairs) == 1:
+        pair = selected_pairs[0]
+        await set_statistics_pair(state, pair)
+
+        if callback.message:
+            await replace_statistics_exchange_message(callback.message, pair)
+
+        return
+
+    if callback.message:
+        await safe_edit_callback_message(
+            callback,
+            build_statistics_pair_cryptos_text(selected_pairs),
+            statistics_pair_cryptos_inline_kb(selected_pairs),
+        )
+
+
+async def send_statistics_exchange_menu(message: types.Message, pair):
+    await message.answer(
+        "<b>Статистика P2P</b>\n\n"
+        f"Пара: <b>{escape(pair.label)}</b>\n\n"
+        "Оберіть біржу для графіка статистики.",
+        reply_markup=statistics_exchange_inline_kb(pair),
+    )
+
+
+async def replace_statistics_exchange_message(message: types.Message, pair):
+    try:
+        await message.delete()
+    except TelegramBadRequest:
+        pass
+
+    await send_statistics_exchange_menu(message, pair)
+
+
+async def send_statistics_direction_menu(message: types.Message, pair, exchange: str):
+    await message.answer(
+        "<b>Статистика P2P</b>\n\n"
+        f"Пара: <b>{escape(pair.label)}</b>\n"
+        f"Біржа: <b>{escape(format_statistics_exchange_label(exchange))}</b>\n\n"
+        "Оберіть напрямок.",
+        reply_markup=statistics_direction_inline_kb(pair, exchange),
+    )
+
+
+async def replace_statistics_direction_message(
+    message: types.Message,
+    pair,
+    exchange: str,
+):
+    try:
+        await message.delete()
+    except TelegramBadRequest:
+        pass
+
+    await send_statistics_direction_menu(message, pair, exchange)
+
+
+async def send_statistics_scope_menu(
+    message: types.Message,
+    pair,
+    exchange: str,
+    direction: str,
+):
+    await message.answer(
+        "<b>Статистика P2P</b>\n\n"
+        f"Пара: <b>{escape(pair.label)}</b>\n"
+        f"Біржа: <b>{escape(format_statistics_exchange_label(exchange))}</b>\n"
+        f"Напрямок: <b>{escape(format_statistics_direction_label(direction))}</b>\n\n"
+        "Оберіть тип статистики:\n"
+        "• <b>Загальна</b> — формується автоматично за налаштуваннями адмінки.\n"
+        "• <b>За моїми фільтрами</b> — збирається зі сканів усіх користувачів з таким самим набором фільтрів.",
+        reply_markup=statistics_scope_inline_kb(pair, exchange, direction),
+    )
+
+
+async def replace_statistics_scope_message(
+    message: types.Message,
+    state: FSMContext,
+    *,
+    pair=None,
+    exchange: str | None = None,
+    direction: str | None = None,
+    telegram_id: int | None = None,
+):
+    if pair is None:
+        pair = (
+            await resolve_statistics_pair(telegram_id, state)
+            if telegram_id is not None
+            else None
+        )
+
+    if pair is None:
+        return
+
+    exchange, direction = await resolve_statistics_market(
+        state,
+        exchange=exchange,
+        direction=direction,
+    )
+
+    if not exchange or not direction:
+        return
+
+    try:
+        await message.delete()
+    except TelegramBadRequest:
+        pass
+
+    await send_statistics_scope_menu(message, pair, exchange, direction)
+
+
+async def send_statistics_menu(
+    message: types.Message,
+    period_type: str,
+    scope: str = STAT_SCOPE_GLOBAL,
+    pair=None,
+    exchange: str | None = None,
+    direction: str | None = None,
+):
+    if pair is None or not exchange or not direction:
+        return
+
+    stats = await load_statistics_for_user(
+        message.from_user.id,
+        scope,
+        period_type,
+        pair,
+        exchange,
+        direction,
+    )
+
+    await send_statistics_message(
+        message,
+        pair,
+        exchange,
+        direction,
+        stats,
+        period_type,
+        scope,
+    )
+
+
+async def load_statistics_for_user(
+    telegram_id: int,
+    scope: str,
+    period_type: str,
+    pair,
+    exchange: str,
+    direction: str,
+):
+    async with AsyncSessionLocal() as session:
+        filter_hashes = None
+        query_pairs = [pair]
+        exchange_code = format_statistics_exchange_code(exchange)
+        side = get_statistics_side(exchange, direction)
+
+        if scope == STAT_SCOPE_FILTER:
+            settings = await get_filters(session, telegram_id)
+            filter_hashes = await build_user_statistics_filter_hashes(
+                session,
+                telegram_id,
+                query_pairs,
+                settings,
+                exchange=exchange,
+                direction=direction,
+            )
+        else:
+            filter_hashes = await build_global_statistics_filter_hashes(
+                session,
+                query_pairs,
+                exchange=exchange,
+                direction=direction,
+            )
+
+        stats = await P2PStatisticsService(session).list_history_for_pairs(
+            query_pairs,
+            period_type=period_type,
+            max_periods=STATISTICS_HISTORY_PERIODS,
+            scope=scope,
+            filter_hashes=filter_hashes,
+            exchange_codes=[exchange_code],
+            sides=[side],
+        )
+
+    return stats
+
+
+async def build_global_statistics_filter_hashes(
+    session,
+    pairs=None,
+    *,
+    exchange: str | None = None,
+    direction: str | None = None,
+) -> list[str]:
+    service = StatisticsSettingsService(session)
+    settings_model = await service.get_or_create_settings()
+
+    if not settings_model.is_enabled:
+        return []
+
+    settings = await service.get_filter_settings()
+    hashes = set()
+
+    if pairs is None:
+        crypto_currencies = await service.list_crypto_currencies()
+        fiat_currencies = await service.list_fiat_currencies()
+        pairs = [
+            P2PUserPair(
+                crypto_currency_id=crypto.id,
+                fiat_currency_id=fiat.id,
+                crypto_code=crypto.code,
+                fiat_code=fiat.code,
+                is_selected=True,
+            )
+            for crypto in crypto_currencies
+            for fiat in fiat_currencies
+        ]
+
+    selected_exchange = normalize_statistics_exchange(exchange)
+    selected_direction = normalize_statistics_direction(direction)
+    exchange_codes = get_global_statistics_exchange_codes(settings_model)
+
+    if selected_exchange:
+        exchange_code = format_statistics_exchange_code(selected_exchange)
+        exchange_codes = [
+            code
+            for code in exchange_codes
+            if code == exchange_code
+        ]
+
+    for pair in pairs:
+        payment_methods = await service.list_selected_methods_for_fiat_code(
+            pair.fiat_code,
+        )
+
+        for exchange_code in exchange_codes:
+            sides = (
+                [get_statistics_side(exchange_code, selected_direction)]
+                if selected_direction
+                else get_global_statistics_sides(exchange_code, settings_model)
+            )
+
+            for side in sides:
+                hashes.add(
+                    build_statistics_filter_hash(
+                        exchange_code=exchange_code,
+                        pair=pair,
+                        side=side,
+                        settings=settings,
+                        payment_methods=payment_methods,
+                    )
+                )
+
+    return sorted(hashes)
+
+
+async def build_user_statistics_filter_hashes(
+    session,
+    telegram_id: int,
+    selected_pairs,
+    settings,
+    *,
+    exchange: str | None = None,
+    direction: str | None = None,
+) -> list[str]:
+    service = PaymentMethodService(session)
+    methods_by_fiat = {}
+    hashes = set()
+    selected_exchange = normalize_statistics_exchange(exchange)
+    selected_direction = normalize_statistics_direction(direction)
+    exchange_codes = (
+        [format_statistics_exchange_code(selected_exchange)]
+        if selected_exchange
+        else ["BINANCE", "OKX"]
+    )
+
+    for pair in selected_pairs:
+        if pair.fiat_code not in methods_by_fiat:
+            methods_by_fiat[pair.fiat_code] = await service.list_user_selected_methods_for_fiat_code(
+                telegram_id,
+                pair.fiat_code,
+            )
+
+        payment_methods = methods_by_fiat[pair.fiat_code]
+
+        for exchange_code in exchange_codes:
+            sides = (
+                [get_statistics_side(exchange_code, selected_direction)]
+                if selected_direction
+                else ["BUY", "SELL"]
+            )
+
+            for side in sides:
+                hashes.add(
+                    build_statistics_filter_hash(
+                        exchange_code=exchange_code,
+                        pair=pair,
+                        side=side,
+                        settings=settings,
+                        payment_methods=payment_methods,
+                    )
+                )
+
+    return sorted(hashes)
+
+
+def get_global_statistics_exchange_codes(settings_model) -> list[str]:
+    codes = []
+
+    if settings_model.scan_binance:
+        codes.append("BINANCE")
+
+    if settings_model.scan_okx:
+        codes.append("OKX")
+
+    return codes
+
+
+def get_global_statistics_sides(exchange_code: str, settings_model) -> list[str]:
+    if exchange_code == "OKX":
+        sides = []
+
+        if settings_model.scan_buy:
+            sides.append("sell")
+
+        if settings_model.scan_sell:
+            sides.append("buy")
+
+        return sides
+
+    sides = []
+
+    if settings_model.scan_buy:
+        sides.append("BUY")
+
+    if settings_model.scan_sell:
+        sides.append("SELL")
+
+    return sides
+
+
+async def send_statistics_message(
+    message: types.Message,
+    pair,
+    exchange: str,
+    direction: str,
+    stats,
+    period_type: str,
+    scope: str,
+):
+    reply_markup = statistics_period_inline_kb(
+        period_type,
+        scope,
+        pair,
+        exchange,
+        direction,
+    )
+
+    if not pair or not stats:
+        await message.answer(
+            build_statistics_text(pair, exchange, direction, stats, period_type, scope),
+            reply_markup=reply_markup,
+        )
+        return
+
+    try:
+        chart = render_p2p_statistics_chart(stats, period_type)
+    except RuntimeError as error:
+        await message.answer(
+            f"{build_statistics_text(pair, exchange, direction, stats, period_type, scope)}\n\n{escape(str(error))}",
+            reply_markup=reply_markup,
+        )
+        return
+
+    await message.answer_photo(
+        BufferedInputFile(chart, filename=f"p2p_statistics_{period_type}.png"),
+        caption=(
+            f"{format_statistics_scope_title(scope)} · {escape(format_statistics_market_label(pair, exchange, direction))}\n"
+            f"{build_p2p_statistics_caption(stats, period_type)}"
+        ),
+        reply_markup=reply_markup,
+    )
+
+
+async def replace_statistics_message(
+    message: types.Message,
+    pair,
+    exchange: str,
+    direction: str,
+    stats,
+    period_type: str,
+    scope: str,
+):
+    try:
+        await message.delete()
+    except TelegramBadRequest:
+        pass
+
+    await send_statistics_message(
+        message,
+        pair,
+        exchange,
+        direction,
+        stats,
+        period_type,
+        scope,
+    )
+
+
 async def send_user_payment_fiats_menu(message: types.Message):
     async with AsyncSessionLocal() as session:
         service = PaymentMethodService(session)
@@ -774,6 +1680,209 @@ def parse_user_payment_toggle_callback(callback_data: str) -> int | None:
         return None
 
 
+def parse_statistics_period_callback(
+    callback_data: str,
+) -> tuple[str, str | None, str | None, str | None, int | None, int | None]:
+    payload = callback_data[len(CB_STATS_PERIOD_PREFIX):]
+    parts = payload.split(":")
+
+    if len(parts) == 1:
+        return STAT_SCOPE_GLOBAL, parts[0], None, None, None, None
+
+    if len(parts) == 2:
+        return parts[0], parts[1], None, None, None, None
+
+    if len(parts) == 4:
+        try:
+            return parts[0], parts[1], None, None, int(parts[2]), int(parts[3])
+        except ValueError:
+            return parts[0], parts[1], None, None, None, None
+
+    if len(parts) == 6:
+        exchange = normalize_statistics_exchange(parts[2])
+        direction = normalize_statistics_direction(parts[3])
+
+        try:
+            return parts[0], parts[1], exchange, direction, int(parts[4]), int(parts[5])
+        except ValueError:
+            return parts[0], parts[1], exchange, direction, None, None
+
+    return "", None, None, None, None, None
+
+
+def parse_statistics_scope_callback(
+    callback_data: str,
+) -> tuple[str, str | None, str | None, int | None, int | None]:
+    payload = callback_data[len(CB_STATS_SCOPE_PREFIX):]
+    parts = payload.split(":")
+
+    if len(parts) == 1:
+        return parts[0], None, None, None, None
+
+    if len(parts) == 3:
+        try:
+            return parts[0], None, None, int(parts[1]), int(parts[2])
+        except ValueError:
+            return parts[0], None, None, None, None
+
+    if len(parts) == 5:
+        exchange = normalize_statistics_exchange(parts[1])
+        direction = normalize_statistics_direction(parts[2])
+
+        try:
+            return parts[0], exchange, direction, int(parts[3]), int(parts[4])
+        except ValueError:
+            return parts[0], exchange, direction, None, None
+
+    return "", None, None, None, None
+
+
+def parse_statistics_exchange_callback(
+    callback_data: str,
+) -> tuple[str | None, int | None, int | None]:
+    payload = callback_data[len(CB_STATS_EXCHANGE_PREFIX):]
+    parts = payload.split(":")
+
+    if len(parts) != 3:
+        return None, None, None
+
+    exchange = normalize_statistics_exchange(parts[0])
+
+    try:
+        return exchange, int(parts[1]), int(parts[2])
+    except ValueError:
+        return exchange, None, None
+
+
+def parse_statistics_direction_callback(
+    callback_data: str,
+) -> tuple[str | None, str | None, int | None, int | None]:
+    payload = callback_data[len(CB_STATS_DIRECTION_PREFIX):]
+    parts = payload.split(":")
+
+    if len(parts) != 4:
+        return None, None, None, None
+
+    exchange = normalize_statistics_exchange(parts[0])
+    direction = normalize_statistics_direction(parts[1])
+
+    try:
+        return exchange, direction, int(parts[2]), int(parts[3])
+    except ValueError:
+        return exchange, direction, None, None
+
+
+def parse_statistics_pair_crypto_callback(callback_data: str) -> int | None:
+    payload = callback_data[len(CB_STATS_PAIR_CRYPTO_PREFIX):]
+
+    try:
+        return int(payload)
+    except ValueError:
+        return None
+
+
+def parse_statistics_pair_select_callback(
+    callback_data: str,
+) -> tuple[int | None, int | None]:
+    payload = callback_data[len(CB_STATS_PAIR_SELECT_PREFIX):]
+    parts = payload.split(":")
+
+    if len(parts) != 2:
+        return None, None
+
+    try:
+        return int(parts[0]), int(parts[1])
+    except ValueError:
+        return None, None
+
+
+def is_supported_statistics_scope(scope: str) -> bool:
+    return scope in {STAT_SCOPE_GLOBAL, STAT_SCOPE_FILTER}
+
+
+def format_statistics_scope_title(scope: str) -> str:
+    if scope == STAT_SCOPE_FILTER:
+        return "🎯 Статистика за моїми фільтрами"
+
+    return "🌍 Загальна статистика"
+
+
+def normalize_statistics_exchange(exchange: str | None) -> str | None:
+    if not exchange:
+        return None
+
+    normalized = str(exchange).lower()
+
+    return normalized if normalized in STATISTICS_EXCHANGES else None
+
+
+def normalize_statistics_direction(direction: str | None) -> str | None:
+    if not direction:
+        return None
+
+    normalized = str(direction).lower()
+
+    return normalized if normalized in STATISTICS_DIRECTIONS else None
+
+
+def format_statistics_exchange_code(exchange: str | None) -> str:
+    normalized = normalize_statistics_exchange(exchange)
+
+    return str(normalized or exchange or "").upper()
+
+
+def format_statistics_exchange_label(exchange: str | None) -> str:
+    normalized = normalize_statistics_exchange(exchange)
+
+    return STATISTICS_EXCHANGE_LABELS.get(normalized, str(exchange or "невідомо"))
+
+
+def format_statistics_direction_label(direction: str | None) -> str:
+    normalized = normalize_statistics_direction(direction)
+
+    return STATISTICS_DIRECTION_LABELS.get(normalized, str(direction or "невідомо"))
+
+
+def format_statistics_market_label(pair, exchange: str, direction: str) -> str:
+    return (
+        f"{format_statistics_exchange_label(exchange)} · "
+        f"{format_statistics_direction_label(direction)} · "
+        f"{pair.label}"
+    )
+
+
+def get_statistics_side(exchange: str | None, direction: str | None) -> str:
+    normalized_exchange = normalize_statistics_exchange(exchange)
+    normalized_direction = normalize_statistics_direction(direction)
+
+    if normalized_exchange and normalized_direction:
+        return get_p2p_exchange_driver(normalized_exchange).side_for_direction(
+            normalized_direction,
+        ).upper()
+
+    return "BUY"
+
+
+def build_statistics_pair_cryptos_text(pairs) -> str:
+    return (
+        "<b>Статистика P2P</b>\n\n"
+        "Оберіть стейбл для графіка статистики.\n\n"
+        f"Доступні пари: <b>{escape(format_pairs_summary(pairs))}</b>"
+    )
+
+
+def build_statistics_pair_fiats_text(pairs, crypto_currency_id: int) -> str:
+    crypto_pairs = filter_pairs_by_crypto(pairs, crypto_currency_id)
+
+    if not crypto_pairs:
+        return build_statistics_pair_cryptos_text(pairs)
+
+    return (
+        f"<b>Статистика P2P · {escape(crypto_pairs[0].crypto_code)}</b>\n\n"
+        "Оберіть фіат для графіка статистики."
+    )
+
+
 def build_p2p_pairs_text(pairs) -> str:
     selected_pairs = [pair for pair in pairs if pair.is_selected]
 
@@ -804,6 +1913,84 @@ def build_p2p_pair_fiats_text(pairs, crypto_currency_id: int) -> str:
         "Оберіть фіатні валюти для цього стейбла.\n\n"
         f"Обрані: <b>{escape(format_pairs_summary(selected_pairs))}</b>"
     )
+
+
+def build_statistics_text(
+    pair,
+    exchange: str | None,
+    direction: str | None,
+    stats,
+    period_type: str,
+    scope: str,
+) -> str:
+    period_label = STAT_PERIOD_LABELS.get(period_type, period_type)
+    title = format_statistics_scope_title(scope)
+
+    if not pair or not exchange or not direction:
+        return (
+            f"<b>{escape(title)} · {escape(period_label)}</b>\n\n"
+            "Спочатку оберіть стейбл, фіат, біржу і напрямок для статистики."
+        )
+
+    market_label = escape(format_statistics_market_label(pair, exchange, direction))
+
+    if not stats:
+        if scope == STAT_SCOPE_GLOBAL:
+            return (
+                f"<b>{escape(title)} · {market_label} · {escape(period_label)}</b>\n\n"
+                "Поки немає збережених автоматичних сканів для цього набору.\n"
+                "Перевірте, що глобальна статистика увімкнена в адмінці, і дочекайтесь наступного погодинного запуску."
+            )
+
+        return (
+            f"<b>{escape(title)} · {market_label} · {escape(period_label)}</b>\n\n"
+            "Поки немає збережених сканів цього набору з таким самим набором фільтрів.\n"
+            "Натисніть пошук ордерів на Binance або OKX, і бот почне накопичувати цю статистику."
+        )
+
+    rows = [
+        f"<b>{escape(title)} · {market_label} · {escape(period_label)}</b>",
+        "",
+    ]
+
+    for item in stats:
+        rows.extend(
+            [
+                f"<b>{escape(item.exchange_code)} · {escape(item.pair_label)} · {format_stat_side(item.side, item.exchange_code)}</b>",
+                f"Період: {format_stat_period(item)}",
+                f"Мін/медіана/сер/макс: {format_stat_price(item.min_price)} / {format_stat_price(item.median_price)} / {format_stat_price(item.avg_price)} / {format_stat_price(item.max_price)} {escape(item.fiat_code)}",
+                f"Ордерів: {item.offers_count} · Сканів: {item.scans_count}",
+                "",
+            ]
+        )
+
+    return "\n".join(rows).strip()
+
+
+def format_stat_side(side: str, exchange_code: str | None = None) -> str:
+    if str(exchange_code or "").upper() == "OKX":
+        labels = {
+            "BUY": "продаж крипти",
+            "SELL": "купівля крипти",
+        }
+    else:
+        labels = {
+            "BUY": "купівля крипти",
+            "SELL": "продаж крипти",
+        }
+
+    return labels.get(str(side).upper(), str(side))
+
+
+def format_stat_period(item) -> str:
+    return (
+        f"{item.period_started_at:%Y-%m-%d %H:%M} - "
+        f"{item.period_ended_at:%Y-%m-%d %H:%M}"
+    )
+
+
+def format_stat_price(value) -> str:
+    return f"{float(value):.4f}".rstrip("0").rstrip(".")
 
 
 def build_user_payment_fiats_text(fiat_currencies) -> str:
@@ -848,6 +2035,18 @@ def filter_pairs_by_crypto(pairs, crypto_currency_id: int):
         for pair in pairs
         if pair.crypto_currency_id == crypto_currency_id
     ]
+
+
+def find_pair(pairs, crypto_currency_id: int, fiat_currency_id: int):
+    return next(
+        (
+            pair
+            for pair in pairs
+            if pair.crypto_currency_id == crypto_currency_id
+            and pair.fiat_currency_id == fiat_currency_id
+        ),
+        None,
+    )
 
 
 async def apply_filter_value(session, telegram_id: int, field: str, raw_value: str):
