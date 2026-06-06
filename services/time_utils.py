@@ -1,4 +1,4 @@
-from datetime import UTC, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, time, timedelta, timezone
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from config import Config
@@ -9,6 +9,21 @@ def display_datetime(value: datetime) -> datetime:
         value = value.replace(tzinfo=UTC)
 
     return value.astimezone(get_display_timezone())
+
+
+def display_today() -> date:
+    return datetime.now(get_display_timezone()).date()
+
+
+def display_date_to_utc_naive_range(value: date) -> tuple[datetime, datetime]:
+    timezone_info = get_display_timezone()
+    started_at = datetime.combine(value, time.min, tzinfo=timezone_info)
+    ended_at = started_at + timedelta(days=1)
+
+    return (
+        started_at.astimezone(UTC).replace(tzinfo=None),
+        ended_at.astimezone(UTC).replace(tzinfo=None),
+    )
 
 
 def get_display_timezone():

@@ -67,7 +67,7 @@ def render_p2p_statistics_chart(
     y_min, y_max = get_y_bounds(values)
 
     draw_grid(draw, label_font, periods, y_min, y_max, period_type)
-    draw_series(draw, items, periods, y_min, y_max)
+    draw_series(draw, items, periods, y_min, y_max, small_font)
     draw_legend(draw, small_font, group_statistics(items))
 
     draw.text(
@@ -224,24 +224,57 @@ def draw_grid(draw, font, periods, y_min: float, y_max: float, period_type: str)
         )
 
 
-def draw_series(draw, items, periods, y_min: float, y_max: float):
+def draw_series(draw, items, periods, y_min: float, y_max: float, label_font):
     grouped = group_statistics(items)
 
     for index, (_, series_items) in enumerate(grouped.items()):
         color = CHART_COLORS[index % len(CHART_COLORS)]
+        point_items = sorted(series_items, key=lambda item: item.period_started_at)
         points = [
-            (
-                x_for_period(item.period_started_at, periods),
-                y_for_value(decimal_to_float(item.median_price), y_min, y_max),
-            )
-            for item in sorted(series_items, key=lambda item: item.period_started_at)
+            build_chart_point(item, periods, y_min, y_max)
+            for item in point_items
         ]
 
-        if len(points) > 1:
-            draw.line(points, fill=color, width=4, joint="curve")
+        line_points = [(point["x"], point["y"]) for point in points]
 
-        for x, y in points:
+        if len(line_points) > 1:
+            draw.line(line_points, fill=color, width=4, joint="curve")
+
+        for point in points:
+            x = point["x"]
+            y = point["y"]
             draw.ellipse((x - 5, y - 5, x + 5, y + 5), fill=color, outline="#ffffff", width=2)
+            draw_point_value_label(draw, point["label"], x, y, label_font, color)
+
+
+def build_chart_point(item, periods, y_min: float, y_max: float) -> dict:
+    median_price = decimal_to_float(item.median_price)
+
+    return {
+        "x": x_for_period(item.period_started_at, periods),
+        "y": y_for_value(median_price, y_min, y_max),
+        "label": format_decimal_price(item.median_price),
+    }
+
+
+def draw_point_value_label(draw, label: str, x: float, y: float, font, color: str):
+    text_width, text_height = text_size(draw, label, font)
+    padding_x = 5
+    padding_y = 3
+    label_x = max(PLOT_LEFT, min(PLOT_RIGHT - text_width, x - text_width / 2))
+    label_y = y - text_height - 14
+
+    if label_y < PLOT_TOP + 4:
+        label_y = y + 12
+
+    box = (
+        label_x - padding_x,
+        label_y - padding_y,
+        label_x + text_width + padding_x,
+        label_y + text_height + padding_y,
+    )
+    draw.rectangle(box, fill="#ffffff", outline=color, width=1)
+    draw.text((label_x, label_y), label, fill="#111827", font=font)
 
 
 def draw_legend(draw, font, grouped):
@@ -357,6 +390,10 @@ def format_period_label(value: datetime, period_type: str) -> str:
 
 def format_price(value: float) -> str:
     return f"{value:.4f}".rstrip("0").rstrip(".")
+
+
+def format_decimal_price(value: Decimal) -> str:
+    return format(value.normalize(), "f").rstrip("0").rstrip(".") or "0"
 
 
 def decimal_to_float(value: Decimal) -> float:

@@ -91,6 +91,11 @@ CB_USER_PAYMENT_FIAT_PREFIX = "userpay:fiat:"
 CB_USER_PAYMENT_TOGGLE_PREFIX = "userpay:toggle:"
 CB_STATS_SCOPE_PREFIX = "stats:scope:"
 CB_STATS_PERIOD_PREFIX = "stats:period:"
+CB_STATS_DATE_PREFIX = "stats:date:"
+CB_STATS_DATE_PREV = "stats:date:prev"
+CB_STATS_DATE_NEXT = "stats:date:next"
+CB_STATS_DATE_TODAY = "stats:date:today"
+CB_STATS_DATE_PICK = "stats:date:pick"
 CB_STATS_PAIR_BACK = "stats:pair_back"
 CB_STATS_PAIR_CRYPTO_PREFIX = "stats:crypto:"
 CB_STATS_PAIR_SELECT_PREFIX = "stats:pair:"
@@ -502,6 +507,7 @@ def statistics_period_inline_kb(
     pair=None,
     exchange: str | None = None,
     direction: str | None = None,
+    selected_date_label: str | None = None,
 ):
     options = [
         ("hour", "Година"),
@@ -512,8 +518,7 @@ def statistics_period_inline_kb(
     ]
     suffix = format_statistics_selection_suffix(pair, exchange, direction)
 
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
+    rows = [
             [
                 InlineKeyboardButton(
                     text=selected_label(current_period == period, label),
@@ -534,14 +539,54 @@ def statistics_period_inline_kb(
                     callback_data=f"{CB_STATS_PERIOD_PREFIX}{scope}:{options[4][0]}{suffix}",
                 ),
             ],
+        ]
+
+    if current_period == "hour":
+        if selected_date_label:
+            rows.append(
+                [
+                    InlineKeyboardButton(
+                        text=f"📅 Дата: {selected_date_label}",
+                        callback_data=CB_STATS_DATE_PICK,
+                    ),
+                ]
+            )
+
+        rows.extend(
             [
-                InlineKeyboardButton(
-                    text="⬅️ До вибору статистики",
-                    callback_data=f"{CB_STATS_SCOPE_PREFIX}menu{suffix}",
-                ),
-            ],
-        ],
+                [
+                    InlineKeyboardButton(
+                        text="⬅️ День",
+                        callback_data=CB_STATS_DATE_PREV,
+                    ),
+                    InlineKeyboardButton(
+                        text="Сьогодні",
+                        callback_data=CB_STATS_DATE_TODAY,
+                    ),
+                    InlineKeyboardButton(
+                        text="День ➡️",
+                        callback_data=CB_STATS_DATE_NEXT,
+                    ),
+                ],
+                [
+                    InlineKeyboardButton(
+                        text="✍️ Ввести дату",
+                        callback_data=CB_STATS_DATE_PICK,
+                    ),
+                ],
+            ]
+        )
+
+    rows.append(
+        [
+            InlineKeyboardButton(
+                text="⬅️ До вибору статистики",
+                callback_data=f"{CB_STATS_SCOPE_PREFIX}menu{suffix}",
+            ),
+        ]
     )
+
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def statistics_exchange_inline_kb(pair):
