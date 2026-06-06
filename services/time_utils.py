@@ -16,9 +16,16 @@ def display_today() -> date:
 
 
 def display_date_to_utc_naive_range(value: date) -> tuple[datetime, datetime]:
+    return display_dates_to_utc_naive_range(value, value + timedelta(days=1))
+
+
+def display_dates_to_utc_naive_range(
+    started_on: date,
+    ended_before: date,
+) -> tuple[datetime, datetime]:
     timezone_info = get_display_timezone()
-    started_at = datetime.combine(value, time.min, tzinfo=timezone_info)
-    ended_at = started_at + timedelta(days=1)
+    started_at = datetime.combine(started_on, time.min, tzinfo=timezone_info)
+    ended_at = datetime.combine(ended_before, time.min, tzinfo=timezone_info)
 
     return (
         started_at.astimezone(UTC).replace(tzinfo=None),

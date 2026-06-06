@@ -507,7 +507,7 @@ def statistics_period_inline_kb(
     pair=None,
     exchange: str | None = None,
     direction: str | None = None,
-    selected_date_label: str | None = None,
+    selected_period_label: str | None = None,
 ):
     options = [
         ("hour", "Година"),
@@ -517,36 +517,37 @@ def statistics_period_inline_kb(
         ("year", "Рік"),
     ]
     suffix = format_statistics_selection_suffix(pair, exchange, direction)
+    range_controls = get_statistics_range_controls(current_period)
 
     rows = [
-            [
-                InlineKeyboardButton(
-                    text=selected_label(current_period == period, label),
-                    callback_data=f"{CB_STATS_PERIOD_PREFIX}{scope}:{period}{suffix}",
-                )
-                for period, label in options[:2]
-            ],
-            [
-                InlineKeyboardButton(
-                    text=selected_label(current_period == period, label),
-                    callback_data=f"{CB_STATS_PERIOD_PREFIX}{scope}:{period}{suffix}",
-                )
-                for period, label in options[2:4]
-            ],
-            [
-                InlineKeyboardButton(
-                    text=selected_label(current_period == options[4][0], options[4][1]),
-                    callback_data=f"{CB_STATS_PERIOD_PREFIX}{scope}:{options[4][0]}{suffix}",
-                ),
-            ],
-        ]
+        [
+            InlineKeyboardButton(
+                text=selected_label(current_period == period, label),
+                callback_data=f"{CB_STATS_PERIOD_PREFIX}{scope}:{period}{suffix}",
+            )
+            for period, label in options[:2]
+        ],
+        [
+            InlineKeyboardButton(
+                text=selected_label(current_period == period, label),
+                callback_data=f"{CB_STATS_PERIOD_PREFIX}{scope}:{period}{suffix}",
+            )
+            for period, label in options[2:4]
+        ],
+        [
+            InlineKeyboardButton(
+                text=selected_label(current_period == options[4][0], options[4][1]),
+                callback_data=f"{CB_STATS_PERIOD_PREFIX}{scope}:{options[4][0]}{suffix}",
+            ),
+        ],
+    ]
 
-    if current_period == "hour":
-        if selected_date_label:
+    if range_controls:
+        if selected_period_label:
             rows.append(
                 [
                     InlineKeyboardButton(
-                        text=f"📅 Дата: {selected_date_label}",
+                        text=f"{range_controls['label']}: {selected_period_label}",
                         callback_data=CB_STATS_DATE_PICK,
                     ),
                 ]
@@ -556,21 +557,21 @@ def statistics_period_inline_kb(
             [
                 [
                     InlineKeyboardButton(
-                        text="⬅️ День",
+                        text=f"⬅️ {range_controls['unit']}",
                         callback_data=CB_STATS_DATE_PREV,
                     ),
                     InlineKeyboardButton(
-                        text="Сьогодні",
+                        text=range_controls["current"],
                         callback_data=CB_STATS_DATE_TODAY,
                     ),
                     InlineKeyboardButton(
-                        text="День ➡️",
+                        text=f"{range_controls['unit']} ➡️",
                         callback_data=CB_STATS_DATE_NEXT,
                     ),
                 ],
                 [
                     InlineKeyboardButton(
-                        text="✍️ Ввести дату",
+                        text=f"✍️ {range_controls['input']}",
                         callback_data=CB_STATS_DATE_PICK,
                     ),
                 ],
@@ -587,6 +588,43 @@ def statistics_period_inline_kb(
     )
 
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def get_statistics_range_controls(period: str) -> dict[str, str] | None:
+    controls = {
+        "hour": {
+            "label": "📅 Дата",
+            "unit": "День",
+            "current": "Сьогодні",
+            "input": "Ввести дату",
+        },
+        "day": {
+            "label": "📅 Місяць",
+            "unit": "Місяць",
+            "current": "Цей місяць",
+            "input": "Ввести місяць",
+        },
+        "week": {
+            "label": "📅 Рік",
+            "unit": "Рік",
+            "current": "Цей рік",
+            "input": "Ввести рік",
+        },
+        "month": {
+            "label": "📅 Рік",
+            "unit": "Рік",
+            "current": "Цей рік",
+            "input": "Ввести рік",
+        },
+        "year": {
+            "label": "📅 Діапазон",
+            "unit": "10 років",
+            "current": "Це десятиліття",
+            "input": "Ввести рік",
+        },
+    }
+
+    return controls.get(period)
 
 
 def statistics_exchange_inline_kb(pair):
