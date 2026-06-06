@@ -13,6 +13,7 @@ from services.p2p_statistics_service import (
     STAT_PERIOD_WEEK,
     STAT_PERIOD_YEAR,
 )
+from services.time_utils import display_datetime
 
 
 CHART_WIDTH = 1200
@@ -111,24 +112,54 @@ def load_pillow():
 
 def load_font(ImageFont, size: int, *, bold: bool = False):
     font_names = (
+        "DejaVuSans-Bold.ttf" if bold else "DejaVuSans.ttf",
+        "NotoSans-Bold.ttf" if bold else "NotoSans-Regular.ttf",
+        "LiberationSans-Bold.ttf" if bold else "LiberationSans-Regular.ttf",
         "arialbd.ttf" if bold else "arial.ttf",
         "segoeuib.ttf" if bold else "segoeui.ttf",
-        "DejaVuSans-Bold.ttf" if bold else "DejaVuSans.ttf",
+        "ARIALUNI.TTF",
     )
     font_dirs = (
         r"C:\Windows\Fonts",
+        "/usr/share/fonts",
         "/usr/share/fonts/truetype/dejavu",
+        "/usr/share/fonts/truetype/noto",
         "/usr/share/fonts/truetype/liberation2",
+        "/app/.fonts",
+        "/app/fonts",
     )
 
+    for font_path in iter_font_paths(font_dirs, font_names):
+        return ImageFont.truetype(font_path, size=size)
+
+    for font_name in font_names:
+        try:
+            return ImageFont.truetype(font_name, size=size)
+        except OSError:
+            continue
+
+    raise RuntimeError(
+        "Не знайдено Unicode-шрифт для графіка. Встановіть DejaVu/Noto fonts або додайте .ttf у /app/fonts."
+    )
+
+
+def iter_font_paths(font_dirs: tuple[str, ...], font_names: tuple[str, ...]):
+    normalized_names = {font_name.lower() for font_name in font_names}
+
     for font_dir in font_dirs:
+        if not os.path.isdir(font_dir):
+            continue
+
         for font_name in font_names:
             font_path = os.path.join(font_dir, font_name)
 
             if os.path.exists(font_path):
-                return ImageFont.truetype(font_path, size=size)
+                yield font_path
 
-    return ImageFont.load_default()
+        for root, _, files in os.walk(font_dir):
+            for file_name in files:
+                if file_name.lower() in normalized_names:
+                    yield os.path.join(root, file_name)
 
 
 def render_empty_chart(Image, ImageDraw, ImageFont, period_type: str) -> bytes:
@@ -307,6 +338,8 @@ def format_side(side: str, exchange_code: str | None = None) -> str:
 
 
 def format_period_label(value: datetime, period_type: str) -> str:
+    value = display_datetime(value)
+
     if period_type == STAT_PERIOD_HOUR:
         return value.strftime("%d.%m %H:%M")
 
