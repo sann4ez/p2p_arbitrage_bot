@@ -389,6 +389,8 @@ class P2PStatisticsService:
         filter_hashes: list[str] | None = None,
         exchange_codes: list[str] | None = None,
         sides: list[str] | None = None,
+        period_started_from: datetime | None = None,
+        period_started_to: datetime | None = None,
     ) -> list[P2PPriceStatisticView]:
         if filter_hashes is not None and not filter_hashes:
             return []
@@ -420,6 +422,12 @@ class P2PStatisticsService:
             conditions.append(
                 P2PPriceStatistic.side.in_([normalize_side(side) for side in sides])
             )
+
+        if period_started_from is not None:
+            conditions.append(P2PPriceStatistic.period_started_at >= period_started_from)
+
+        if period_started_to is not None:
+            conditions.append(P2PPriceStatistic.period_started_at < period_started_to)
 
         result = await self.session.execute(
             select(P2PPriceStatistic, Exchange, CryptoCurrency, FiatCurrency)

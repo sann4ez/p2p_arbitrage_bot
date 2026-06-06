@@ -1,4 +1,5 @@
 import json
+from datetime import date, datetime, timedelta
 from html import escape
 
 from aiogram import F, Router, types
@@ -9,7 +10,7 @@ from aiogram.types import BufferedInputFile
 
 from db.base import AsyncSessionLocal
 from db.dto import P2PUserPair
-from fsm.states import AppMenu
+from fsm.states import AppMenu, P2PExchange
 from keyboards.menu import (
     BTN_BACK,
     BTN_CABINET,
@@ -45,6 +46,11 @@ from keyboards.menu import (
     CB_STATS_PAIR_CRYPTO_PREFIX,
     CB_STATS_PAIR_SELECT_PREFIX,
     CB_STATS_DIRECTION_PREFIX,
+    CB_STATS_DATE_NEXT,
+    CB_STATS_DATE_PICK,
+    CB_STATS_DATE_PREFIX,
+    CB_STATS_DATE_PREV,
+    CB_STATS_DATE_TODAY,
     CB_STATS_EXCHANGE_PREFIX,
     CB_STATS_PERIOD_PREFIX,
     CB_STATS_SCOPE_PREFIX,
@@ -117,6 +123,7 @@ from services.p2p_exchange_drivers import (
 )
 from services.p2p_statistics_service import (
     STAT_PERIOD_DAY,
+    STAT_PERIOD_HOUR,
     STAT_PERIOD_LABELS,
     STAT_PERIOD_TYPES,
     STAT_SCOPE_FILTER,
@@ -129,11 +136,16 @@ from services.p2p_statistics_chart import (
     render_p2p_statistics_chart,
 )
 from services.statistics_settings_service import StatisticsSettingsService
-from services.time_utils import display_datetime
+from services.time_utils import (
+    display_date_to_utc_naive_range,
+    display_datetime,
+    display_today,
+)
 from services.user_service import UserService
 
 router = Router()
 STATISTICS_HISTORY_PERIODS = 12
+STATISTICS_HOURLY_DATE_PERIODS = 24
 STATISTICS_EXCHANGES = {"binance", "okx"}
 STATISTICS_DIRECTIONS = {
     P2P_DIRECTION_FIAT_TO_CRYPTO,
@@ -243,7 +255,20 @@ async def cabinet_menu(message: types.Message, state: FSMContext):
     )
 
 
-@router.message(StateFilter(None), F.text == BTN_STATISTICS)
+@router.message(
+    StateFilter(
+        None,
+        AppMenu.p2p_exchanges,
+        AppMenu.cabinet,
+        AppMenu.p2p_filters,
+        AppMenu.p2p_pairs,
+        AppMenu.payment_methods,
+        AppMenu.statistics,
+        P2PExchange.binance,
+        P2PExchange.okx,
+    ),
+    F.text == BTN_STATISTICS,
+)
 async def statistics_menu(message: types.Message, state: FSMContext):
     await state.set_state(AppMenu.statistics)
     await clear_statistics_pair(state)
@@ -503,6 +528,13 @@ async def statistics_period_callback(
         await callback.answer("Спочатку оберіть біржу і напрямок", show_alert=True)
         return
 
+    selected_date = (
+        await get_statistics_selected_date(state)
+        if period_type == STAT_PERIOD_HOUR
+        else None
+    )
+    await set_statistics_view_context(state, scope, period_type, selected_date)
+
     stats = await load_statistics_for_user(
         callback.from_user.id,
         scope,
@@ -510,6 +542,7 @@ async def statistics_period_callback(
         pair,
         exchange,
         direction,
+        selected_date=selected_date,
     )
 
     await callback.answer(STAT_PERIOD_LABELS.get(period_type, period_type))
@@ -523,6 +556,72 @@ async def statistics_period_callback(
             stats,
             period_type,
             scope,
+            selected_date=selected_date,
+        )
+
+
+@router.callback_query(
+    StateFilter(AppMenu.statistics),
+    F.data.startswith(CB_STATS_DATE_PREFIX),
+)
+async def statistics_date_callback(
+    callback: types.CallbackQuery,
+    state: FSMContext,
+):
+    action = (callback.data or "")[len(CB_STATS_DATE_PREFIX):]
+
+    if action == "pick":
+        await state.update_data(statistics_waiting_date=True)
+        await callback.answer()
+
+        if callback.message:
+            await callback.message.answer(
+                "Введіть дату для погодинної статистики у форматі <b>ДД.ММ.РРРР</b>.\n"
+                "Наприклад: <code>04.06.2026</code>"
+            )
+
+        return
+
+    pair = await resolve_statistics_pair(callback.from_user.id, state)
+    exchange, direction = await resolve_statistics_market(state)
+
+    if not pair or not exchange or not direction:
+        await callback.answer("Спочатку оберіть пару, біржу і напрямок", show_alert=True)
+        return
+
+    current_date = await get_statistics_selected_date(state)
+    selected_date = resolve_statistics_date_action(action, current_date)
+
+    if action == "next" and selected_date and selected_date > display_today():
+        await callback.answer("Це майбутня дата", show_alert=True)
+        return
+
+    data = await state.get_data()
+    scope = data.get("statistics_scope") or STAT_SCOPE_GLOBAL
+    await set_statistics_view_context(state, scope, STAT_PERIOD_HOUR, selected_date)
+
+    stats = await load_statistics_for_user(
+        callback.from_user.id,
+        scope,
+        STAT_PERIOD_HOUR,
+        pair,
+        exchange,
+        direction,
+        selected_date=selected_date,
+    )
+
+    await callback.answer(format_statistics_date_answer(selected_date))
+
+    if callback.message:
+        await replace_statistics_message(
+            callback.message,
+            pair,
+            exchange,
+            direction,
+            stats,
+            STAT_PERIOD_HOUR,
+            scope,
+            selected_date=selected_date,
         )
 
 
@@ -573,6 +672,8 @@ async def statistics_scope_callback(
         await callback.answer("Спочатку оберіть біржу і напрямок", show_alert=True)
         return
 
+    await set_statistics_view_context(state, scope, STAT_PERIOD_DAY, None)
+
     stats = await load_statistics_for_user(
         callback.from_user.id,
         scope,
@@ -593,7 +694,61 @@ async def statistics_scope_callback(
             stats,
             STAT_PERIOD_DAY,
             scope,
+            selected_date=None,
         )
+
+
+@router.message(StateFilter(AppMenu.statistics), F.text)
+async def statistics_date_input(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+
+    if not data.get("statistics_waiting_date"):
+        return
+
+    selected_date = parse_statistics_date_text(message.text or "")
+
+    if selected_date is None:
+        await message.answer(
+            "Не вдалося прочитати дату. Введіть її у форматі <b>ДД.ММ.РРРР</b>, "
+            "наприклад <code>04.06.2026</code>."
+        )
+        return
+
+    if selected_date > display_today():
+        await message.answer("Це майбутня дата. Введіть сьогоднішню або минулу дату.")
+        return
+
+    pair = await resolve_statistics_pair(message.from_user.id, state)
+    exchange, direction = await resolve_statistics_market(state)
+
+    if not pair or not exchange or not direction:
+        await state.update_data(statistics_waiting_date=False)
+        await message.answer("Спочатку оберіть пару, біржу і напрямок для статистики.")
+        return
+
+    scope = data.get("statistics_scope") or STAT_SCOPE_GLOBAL
+    await set_statistics_view_context(state, scope, STAT_PERIOD_HOUR, selected_date)
+
+    stats = await load_statistics_for_user(
+        message.from_user.id,
+        scope,
+        STAT_PERIOD_HOUR,
+        pair,
+        exchange,
+        direction,
+        selected_date=selected_date,
+    )
+
+    await send_statistics_message(
+        message,
+        pair,
+        exchange,
+        direction,
+        stats,
+        STAT_PERIOD_HOUR,
+        scope,
+        selected_date=selected_date,
+    )
 
 
 @router.message(F.text == BTN_USER_PAYMENT_METHODS)
@@ -1024,6 +1179,38 @@ async def set_statistics_direction(
     )
 
 
+async def set_statistics_view_context(
+    state: FSMContext,
+    scope: str,
+    period_type: str,
+    selected_date: date | None,
+):
+    await state.set_state(AppMenu.statistics)
+    await state.update_data(
+        statistics_scope=scope,
+        statistics_period_type=period_type,
+        statistics_selected_date=(
+            selected_date.isoformat()
+            if period_type == STAT_PERIOD_HOUR and selected_date is not None
+            else None
+        ),
+        statistics_waiting_date=False,
+    )
+
+
+async def get_statistics_selected_date(state: FSMContext) -> date | None:
+    data = await state.get_data()
+    raw_value = data.get("statistics_selected_date")
+
+    if not raw_value:
+        return None
+
+    try:
+        return date.fromisoformat(str(raw_value))
+    except ValueError:
+        return None
+
+
 async def clear_statistics_pair(state: FSMContext):
     await state.update_data(
         statistics_pair_crypto_currency_id=None,
@@ -1032,6 +1219,10 @@ async def clear_statistics_pair(state: FSMContext):
         statistics_pair_fiat_code=None,
         statistics_exchange=None,
         statistics_direction=None,
+        statistics_scope=None,
+        statistics_period_type=None,
+        statistics_selected_date=None,
+        statistics_waiting_date=False,
     )
 
 
@@ -1194,6 +1385,7 @@ async def send_statistics_menu(
     pair=None,
     exchange: str | None = None,
     direction: str | None = None,
+    selected_date: date | None = None,
 ):
     if pair is None or not exchange or not direction:
         return
@@ -1205,6 +1397,7 @@ async def send_statistics_menu(
         pair,
         exchange,
         direction,
+        selected_date=selected_date,
     )
 
     await send_statistics_message(
@@ -1215,6 +1408,7 @@ async def send_statistics_menu(
         stats,
         period_type,
         scope,
+        selected_date=selected_date,
     )
 
 
@@ -1225,12 +1419,23 @@ async def load_statistics_for_user(
     pair,
     exchange: str,
     direction: str,
+    *,
+    selected_date: date | None = None,
 ):
     async with AsyncSessionLocal() as session:
         filter_hashes = None
         query_pairs = [pair]
         exchange_code = format_statistics_exchange_code(exchange)
         side = get_statistics_side(exchange, direction)
+        period_started_from = None
+        period_started_to = None
+        max_periods = STATISTICS_HISTORY_PERIODS
+
+        if period_type == STAT_PERIOD_HOUR and selected_date is not None:
+            period_started_from, period_started_to = display_date_to_utc_naive_range(
+                selected_date,
+            )
+            max_periods = STATISTICS_HOURLY_DATE_PERIODS
 
         if scope == STAT_SCOPE_FILTER:
             settings = await get_filters(session, telegram_id)
@@ -1253,11 +1458,13 @@ async def load_statistics_for_user(
         stats = await P2PStatisticsService(session).list_history_for_pairs(
             query_pairs,
             period_type=period_type,
-            max_periods=STATISTICS_HISTORY_PERIODS,
+            max_periods=max_periods,
             scope=scope,
             filter_hashes=filter_hashes,
             exchange_codes=[exchange_code],
             sides=[side],
+            period_started_from=period_started_from,
+            period_started_to=period_started_to,
         )
 
     return stats
@@ -1425,6 +1632,7 @@ async def send_statistics_message(
     stats,
     period_type: str,
     scope: str,
+    selected_date: date | None = None,
 ):
     reply_markup = statistics_period_inline_kb(
         period_type,
@@ -1432,11 +1640,20 @@ async def send_statistics_message(
         pair,
         exchange,
         direction,
+        selected_date_label=format_statistics_selected_date(selected_date),
     )
 
     if not pair or not stats:
         await message.answer(
-            build_statistics_text(pair, exchange, direction, stats, period_type, scope),
+            build_statistics_text(
+                pair,
+                exchange,
+                direction,
+                stats,
+                period_type,
+                scope,
+                selected_date=selected_date,
+            ),
             reply_markup=reply_markup,
         )
         return
@@ -1445,7 +1662,7 @@ async def send_statistics_message(
         chart = render_p2p_statistics_chart(stats, period_type)
     except RuntimeError as error:
         await message.answer(
-            f"{build_statistics_text(pair, exchange, direction, stats, period_type, scope)}\n\n{escape(str(error))}",
+            f"{build_statistics_text(pair, exchange, direction, stats, period_type, scope, selected_date=selected_date)}\n\n{escape(str(error))}",
             reply_markup=reply_markup,
         )
         return
@@ -1453,7 +1670,8 @@ async def send_statistics_message(
     await message.answer_photo(
         BufferedInputFile(chart, filename=f"p2p_statistics_{period_type}.png"),
         caption=(
-            f"{format_statistics_scope_title(scope)} · {escape(format_statistics_market_label(pair, exchange, direction))}\n"
+            f"{format_statistics_scope_title(scope)} · {escape(format_statistics_market_label(pair, exchange, direction))} · "
+            f"{escape(format_statistics_period_label(period_type, selected_date))}\n"
             f"{build_p2p_statistics_caption(stats, period_type)}"
         ),
         reply_markup=reply_markup,
@@ -1468,6 +1686,7 @@ async def replace_statistics_message(
     stats,
     period_type: str,
     scope: str,
+    selected_date: date | None = None,
 ):
     try:
         await message.delete()
@@ -1482,6 +1701,7 @@ async def replace_statistics_message(
         stats,
         period_type,
         scope,
+        selected_date=selected_date,
     )
 
 
@@ -1711,6 +1931,54 @@ def parse_statistics_period_callback(
     return "", None, None, None, None, None
 
 
+def parse_statistics_date_text(value: str) -> date | None:
+    text = str(value or "").strip()
+    formats = ("%d.%m.%Y", "%d.%m.%y", "%Y-%m-%d")
+
+    for date_format in formats:
+        try:
+            return datetime.strptime(text, date_format).date()
+        except ValueError:
+            continue
+
+    return None
+
+
+def resolve_statistics_date_action(
+    action: str,
+    selected_date: date | None,
+) -> date | None:
+    base_date = selected_date or display_today()
+
+    if action == "prev":
+        return base_date - timedelta(days=1)
+
+    if action == "next":
+        return base_date + timedelta(days=1)
+
+    if action == "today":
+        return display_today()
+
+    if action == "clear":
+        return None
+
+    return selected_date
+
+
+def format_statistics_selected_date(value: date | None) -> str | None:
+    if value is None:
+        return None
+
+    return value.strftime("%d.%m.%Y")
+
+
+def format_statistics_date_answer(value: date | None) -> str:
+    if value is None:
+        return "Останні 12 годин"
+
+    return value.strftime("%d.%m.%Y")
+
+
 def parse_statistics_scope_callback(
     callback_data: str,
 ) -> tuple[str, str | None, str | None, int | None, int | None]:
@@ -1844,6 +2112,18 @@ def format_statistics_direction_label(direction: str | None) -> str:
     return STATISTICS_DIRECTION_LABELS.get(normalized, str(direction or "невідомо"))
 
 
+def format_statistics_period_label(
+    period_type: str,
+    selected_date: date | None = None,
+) -> str:
+    period_label = STAT_PERIOD_LABELS.get(period_type, period_type)
+
+    if period_type == STAT_PERIOD_HOUR and selected_date is not None:
+        return f"{period_label} · {format_statistics_selected_date(selected_date)}"
+
+    return period_label
+
+
 def format_statistics_market_label(pair, exchange: str, direction: str) -> str:
     return (
         f"{format_statistics_exchange_label(exchange)} · "
@@ -1923,8 +2203,10 @@ def build_statistics_text(
     stats,
     period_type: str,
     scope: str,
+    *,
+    selected_date: date | None = None,
 ) -> str:
-    period_label = STAT_PERIOD_LABELS.get(period_type, period_type)
+    period_label = format_statistics_period_label(period_type, selected_date)
     title = format_statistics_scope_title(scope)
 
     if not pair or not exchange or not direction:
