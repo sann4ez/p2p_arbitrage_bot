@@ -153,6 +153,7 @@ STATISTICS_DAILY_MONTH_PERIODS = 31
 STATISTICS_WEEKLY_YEAR_PERIODS = 54
 STATISTICS_MONTHLY_YEAR_PERIODS = 12
 STATISTICS_YEARLY_DECADE_PERIODS = 10
+TELEGRAM_PHOTO_CAPTION_LIMIT = 1024
 STATISTICS_EXCHANGES = {"binance", "okx"}
 STATISTICS_DIRECTIONS = {
     P2P_DIRECTION_FIAT_TO_CRYPTO,
@@ -538,7 +539,7 @@ async def statistics_period_callback(
 
     selected_anchor = normalize_statistics_period_anchor(
         period_type,
-        await get_statistics_period_anchor(state),
+        await get_statistics_period_anchor(state, period_type=period_type),
     )
     selected_anchor = selected_anchor or current_statistics_period_anchor(period_type)
     await set_statistics_view_context(state, scope, period_type, selected_anchor)
@@ -1213,8 +1214,16 @@ async def set_statistics_view_context(
     )
 
 
-async def get_statistics_period_anchor(state: FSMContext) -> date | None:
+async def get_statistics_period_anchor(
+    state: FSMContext,
+    *,
+    period_type: str | None = None,
+) -> date | None:
     data = await state.get_data()
+
+    if period_type is not None and data.get("statistics_period_type") != period_type:
+        return None
+
     raw_value = data.get("statistics_period_anchor") or data.get(
         "statistics_selected_date"
     )
@@ -1694,16 +1703,17 @@ async def send_statistics_message(
         )
         return
 
-    await message.answer_photo(
-        BufferedInputFile(chart, filename=f"p2p_statistics_{period_type}.png"),
-        caption=(
-            f"{format_statistics_scope_title(scope)} · {escape(format_statistics_market_label(pair, exchange, direction))} · "
-            f"{escape(format_statistics_period_label(period_type, selected_anchor))}\n"
-            f"{build_p2p_statistics_caption(stats, period_type)}"
-        ),
-        reply_markup=reply_markup,
+    caption = (
+        f"{format_statistics_scope_title(scope)} · {escape(format_statistics_market_label(pair, exchange, direction))} · "
+        f"{escape(format_statistics_period_label(period_type, selected_anchor))}\n"
+        f"{build_p2p_statistics_caption(stats, period_type)}"
     )
 
+    await message.answer_photo(
+        BufferedInputFile(chart, filename=f"p2p_statistics_{period_type}.png"),
+        caption=append_statistics_values_to_caption(caption, stats, period_type),
+        reply_markup=reply_markup,
+    )
 
 async def replace_statistics_message(
     message: types.Message,
@@ -1730,6 +1740,52 @@ async def replace_statistics_message(
         scope,
         selected_anchor=selected_anchor,
     )
+
+
+def append_statistics_values_to_caption(
+    caption: str,
+    stats,
+    period_type: str,
+) -> str:
+    if not stats:
+        return caption
+
+    fiat_code = escape(str(getattr(stats[0], "fiat_code", "") or ""))
+    header = "\n\n<b>Значення:</b> медіана"
+    if fiat_code:
+        header = f"{header}, {fiat_code}"
+
+    result = f"{caption}{header}"
+
+    if len(result) > TELEGRAM_PHOTO_CAPTION_LIMIT:
+        return caption
+
+    rows = build_statistics_known_value_rows(stats, period_type)
+    added_rows = 0
+
+    for row in rows:
+        candidate = f"{result}\n{row}"
+        if len(candidate) > TELEGRAM_PHOTO_CAPTION_LIMIT:
+            remaining_rows = len(rows) - added_rows
+            suffix = f"\n... ще {remaining_rows}"
+            if len(f"{result}{suffix}") <= TELEGRAM_PHOTO_CAPTION_LIMIT:
+                result = f"{result}{suffix}"
+            break
+
+        result = candidate
+        added_rows += 1
+
+    return result
+
+
+def build_statistics_known_value_rows(stats, period_type: str) -> list[str]:
+    return [
+        (
+            f"{format_statistics_value_period(item.period_started_at, period_type)}: "
+            f"<b>{format_stat_price(item.median_price)}</b>"
+        )
+        for item in sorted(stats, key=lambda stat: stat.period_started_at)
+    ]
 
 
 async def send_user_payment_fiats_menu(message: types.Message):
@@ -2584,6 +2640,27 @@ def format_stat_period(item) -> str:
         f"{started_at:%Y-%m-%d %H:%M} - "
         f"{ended_at:%Y-%m-%d %H:%M}"
     )
+
+
+def format_statistics_value_period(value: datetime, period_type: str) -> str:
+    display_value = display_datetime(value)
+
+    if period_type == STAT_PERIOD_HOUR:
+        return display_value.strftime("%H:%M")
+
+    if period_type == STAT_PERIOD_DAY:
+        return display_value.strftime("%d.%m")
+
+    if period_type == STAT_PERIOD_WEEK:
+        return f"з {display_value:%d.%m}"
+
+    if period_type == STAT_PERIOD_MONTH:
+        return display_value.strftime("%m.%Y")
+
+    if period_type == STAT_PERIOD_YEAR:
+        return display_value.strftime("%Y")
+
+    return display_value.strftime("%d.%m.%Y %H:%M")
 
 
 def format_stat_price(value) -> str:
