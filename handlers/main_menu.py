@@ -129,6 +129,7 @@ from services.p2p_statistics_chart import (
     render_p2p_statistics_chart,
 )
 from services.statistics_settings_service import StatisticsSettingsService
+from services.time_utils import display_datetime
 from services.user_service import UserService
 
 router = Router()
@@ -1983,9 +1984,12 @@ def format_stat_side(side: str, exchange_code: str | None = None) -> str:
 
 
 def format_stat_period(item) -> str:
+    started_at = display_datetime(item.period_started_at)
+    ended_at = display_datetime(item.period_ended_at)
+
     return (
-        f"{item.period_started_at:%Y-%m-%d %H:%M} - "
-        f"{item.period_ended_at:%Y-%m-%d %H:%M}"
+        f"{started_at:%Y-%m-%d %H:%M} - "
+        f"{ended_at:%Y-%m-%d %H:%M}"
     )
 
 
