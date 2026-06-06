@@ -125,7 +125,10 @@ from services.p2p_statistics_service import (
     STAT_PERIOD_DAY,
     STAT_PERIOD_HOUR,
     STAT_PERIOD_LABELS,
+    STAT_PERIOD_MONTH,
     STAT_PERIOD_TYPES,
+    STAT_PERIOD_WEEK,
+    STAT_PERIOD_YEAR,
     STAT_SCOPE_FILTER,
     STAT_SCOPE_GLOBAL,
     build_statistics_filter_hash,
@@ -137,7 +140,7 @@ from services.p2p_statistics_chart import (
 )
 from services.statistics_settings_service import StatisticsSettingsService
 from services.time_utils import (
-    display_date_to_utc_naive_range,
+    display_dates_to_utc_naive_range,
     display_datetime,
     display_today,
 )
@@ -146,6 +149,10 @@ from services.user_service import UserService
 router = Router()
 STATISTICS_HISTORY_PERIODS = 12
 STATISTICS_HOURLY_DATE_PERIODS = 24
+STATISTICS_DAILY_MONTH_PERIODS = 31
+STATISTICS_WEEKLY_YEAR_PERIODS = 54
+STATISTICS_MONTHLY_YEAR_PERIODS = 12
+STATISTICS_YEARLY_DECADE_PERIODS = 10
 STATISTICS_EXCHANGES = {"binance", "okx"}
 STATISTICS_DIRECTIONS = {
     P2P_DIRECTION_FIAT_TO_CRYPTO,
@@ -281,6 +288,7 @@ async def statistics_menu(message: types.Message, state: FSMContext):
         AppMenu.p2p_pairs,
         AppMenu.payment_methods,
         AppMenu.statistics,
+        AppMenu.statistics_period_input,
     ),
     F.text == BTN_BACK,
 )
@@ -528,12 +536,12 @@ async def statistics_period_callback(
         await callback.answer("Спочатку оберіть біржу і напрямок", show_alert=True)
         return
 
-    selected_date = (
-        await get_statistics_selected_date(state)
-        if period_type == STAT_PERIOD_HOUR
-        else None
+    selected_anchor = normalize_statistics_period_anchor(
+        period_type,
+        await get_statistics_period_anchor(state),
     )
-    await set_statistics_view_context(state, scope, period_type, selected_date)
+    selected_anchor = selected_anchor or current_statistics_period_anchor(period_type)
+    await set_statistics_view_context(state, scope, period_type, selected_anchor)
 
     stats = await load_statistics_for_user(
         callback.from_user.id,
@@ -542,7 +550,7 @@ async def statistics_period_callback(
         pair,
         exchange,
         direction,
-        selected_date=selected_date,
+        selected_anchor=selected_anchor,
     )
 
     await callback.answer(STAT_PERIOD_LABELS.get(period_type, period_type))
@@ -556,12 +564,12 @@ async def statistics_period_callback(
             stats,
             period_type,
             scope,
-            selected_date=selected_date,
+            selected_anchor=selected_anchor,
         )
 
 
 @router.callback_query(
-    StateFilter(AppMenu.statistics),
+    StateFilter(AppMenu.statistics, AppMenu.statistics_period_input),
     F.data.startswith(CB_STATS_DATE_PREFIX),
 )
 async def statistics_date_callback(
@@ -569,15 +577,17 @@ async def statistics_date_callback(
     state: FSMContext,
 ):
     action = (callback.data or "")[len(CB_STATS_DATE_PREFIX):]
+    data = await state.get_data()
+    period_type = data.get("statistics_period_type") or STAT_PERIOD_HOUR
 
     if action == "pick":
-        await state.update_data(statistics_waiting_date=True)
+        await state.set_state(AppMenu.statistics_period_input)
+        await state.update_data(statistics_waiting_period_type=period_type)
         await callback.answer()
 
         if callback.message:
             await callback.message.answer(
-                "Введіть дату для погодинної статистики у форматі <b>ДД.ММ.РРРР</b>.\n"
-                "Наприклад: <code>04.06.2026</code>"
+                build_statistics_period_input_prompt(period_type)
             )
 
         return
@@ -589,28 +599,31 @@ async def statistics_date_callback(
         await callback.answer("Спочатку оберіть пару, біржу і напрямок", show_alert=True)
         return
 
-    current_date = await get_statistics_selected_date(state)
-    selected_date = resolve_statistics_date_action(action, current_date)
+    current_anchor = await get_statistics_period_anchor(state)
+    selected_anchor = resolve_statistics_period_action(
+        period_type,
+        action,
+        current_anchor,
+    )
 
-    if action == "next" and selected_date and selected_date > display_today():
-        await callback.answer("Це майбутня дата", show_alert=True)
+    if action == "next" and is_future_statistics_anchor(period_type, selected_anchor):
+        await callback.answer("Це майбутній період", show_alert=True)
         return
 
-    data = await state.get_data()
     scope = data.get("statistics_scope") or STAT_SCOPE_GLOBAL
-    await set_statistics_view_context(state, scope, STAT_PERIOD_HOUR, selected_date)
+    await set_statistics_view_context(state, scope, period_type, selected_anchor)
 
     stats = await load_statistics_for_user(
         callback.from_user.id,
         scope,
-        STAT_PERIOD_HOUR,
+        period_type,
         pair,
         exchange,
         direction,
-        selected_date=selected_date,
+        selected_anchor=selected_anchor,
     )
 
-    await callback.answer(format_statistics_date_answer(selected_date))
+    await callback.answer(format_statistics_period_answer(period_type, selected_anchor))
 
     if callback.message:
         await replace_statistics_message(
@@ -619,9 +632,9 @@ async def statistics_date_callback(
             exchange,
             direction,
             stats,
-            STAT_PERIOD_HOUR,
+            period_type,
             scope,
-            selected_date=selected_date,
+            selected_anchor=selected_anchor,
         )
 
 
@@ -672,7 +685,8 @@ async def statistics_scope_callback(
         await callback.answer("Спочатку оберіть біржу і напрямок", show_alert=True)
         return
 
-    await set_statistics_view_context(state, scope, STAT_PERIOD_DAY, None)
+    selected_anchor = current_statistics_period_anchor(STAT_PERIOD_DAY)
+    await set_statistics_view_context(state, scope, STAT_PERIOD_DAY, selected_anchor)
 
     stats = await load_statistics_for_user(
         callback.from_user.id,
@@ -681,6 +695,7 @@ async def statistics_scope_callback(
         pair,
         exchange,
         direction,
+        selected_anchor=selected_anchor,
     )
 
     await callback.answer(format_statistics_scope_title(scope))
@@ -694,49 +709,47 @@ async def statistics_scope_callback(
             stats,
             STAT_PERIOD_DAY,
             scope,
-            selected_date=None,
+            selected_anchor=selected_anchor,
         )
 
 
-@router.message(StateFilter(AppMenu.statistics), F.text)
+@router.message(StateFilter(AppMenu.statistics_period_input), F.text)
 async def statistics_date_input(message: types.Message, state: FSMContext):
     data = await state.get_data()
+    period_type = data.get("statistics_waiting_period_type") or data.get(
+        "statistics_period_type"
+    ) or STAT_PERIOD_HOUR
 
-    if not data.get("statistics_waiting_date"):
+    selected_anchor = parse_statistics_period_input(message.text or "", period_type)
+
+    if selected_anchor is None:
+        await message.answer(build_statistics_period_input_error(period_type))
         return
 
-    selected_date = parse_statistics_date_text(message.text or "")
-
-    if selected_date is None:
-        await message.answer(
-            "Не вдалося прочитати дату. Введіть її у форматі <b>ДД.ММ.РРРР</b>, "
-            "наприклад <code>04.06.2026</code>."
-        )
-        return
-
-    if selected_date > display_today():
-        await message.answer("Це майбутня дата. Введіть сьогоднішню або минулу дату.")
+    if is_future_statistics_anchor(period_type, selected_anchor):
+        await message.answer("Це майбутній період. Введіть поточний або минулий період.")
         return
 
     pair = await resolve_statistics_pair(message.from_user.id, state)
     exchange, direction = await resolve_statistics_market(state)
 
     if not pair or not exchange or not direction:
-        await state.update_data(statistics_waiting_date=False)
+        await state.set_state(AppMenu.statistics)
+        await state.update_data(statistics_waiting_period_type=None)
         await message.answer("Спочатку оберіть пару, біржу і напрямок для статистики.")
         return
 
     scope = data.get("statistics_scope") or STAT_SCOPE_GLOBAL
-    await set_statistics_view_context(state, scope, STAT_PERIOD_HOUR, selected_date)
+    await set_statistics_view_context(state, scope, period_type, selected_anchor)
 
     stats = await load_statistics_for_user(
         message.from_user.id,
         scope,
-        STAT_PERIOD_HOUR,
+        period_type,
         pair,
         exchange,
         direction,
-        selected_date=selected_date,
+        selected_anchor=selected_anchor,
     )
 
     await send_statistics_message(
@@ -745,9 +758,9 @@ async def statistics_date_input(message: types.Message, state: FSMContext):
         exchange,
         direction,
         stats,
-        STAT_PERIOD_HOUR,
+        period_type,
         scope,
-        selected_date=selected_date,
+        selected_anchor=selected_anchor,
     )
 
 
@@ -1183,24 +1196,28 @@ async def set_statistics_view_context(
     state: FSMContext,
     scope: str,
     period_type: str,
-    selected_date: date | None,
+    selected_anchor: date | None,
 ):
+    selected_anchor = normalize_statistics_period_anchor(period_type, selected_anchor)
+
     await state.set_state(AppMenu.statistics)
     await state.update_data(
         statistics_scope=scope,
         statistics_period_type=period_type,
-        statistics_selected_date=(
-            selected_date.isoformat()
-            if period_type == STAT_PERIOD_HOUR and selected_date is not None
+        statistics_period_anchor=(
+            selected_anchor.isoformat()
+            if selected_anchor is not None
             else None
         ),
-        statistics_waiting_date=False,
+        statistics_waiting_period_type=None,
     )
 
 
-async def get_statistics_selected_date(state: FSMContext) -> date | None:
+async def get_statistics_period_anchor(state: FSMContext) -> date | None:
     data = await state.get_data()
-    raw_value = data.get("statistics_selected_date")
+    raw_value = data.get("statistics_period_anchor") or data.get(
+        "statistics_selected_date"
+    )
 
     if not raw_value:
         return None
@@ -1221,8 +1238,9 @@ async def clear_statistics_pair(state: FSMContext):
         statistics_direction=None,
         statistics_scope=None,
         statistics_period_type=None,
+        statistics_period_anchor=None,
         statistics_selected_date=None,
-        statistics_waiting_date=False,
+        statistics_waiting_period_type=None,
     )
 
 
@@ -1385,10 +1403,12 @@ async def send_statistics_menu(
     pair=None,
     exchange: str | None = None,
     direction: str | None = None,
-    selected_date: date | None = None,
+    selected_anchor: date | None = None,
 ):
     if pair is None or not exchange or not direction:
         return
+
+    selected_anchor = selected_anchor or current_statistics_period_anchor(period_type)
 
     stats = await load_statistics_for_user(
         message.from_user.id,
@@ -1397,7 +1417,7 @@ async def send_statistics_menu(
         pair,
         exchange,
         direction,
-        selected_date=selected_date,
+        selected_anchor=selected_anchor,
     )
 
     await send_statistics_message(
@@ -1408,7 +1428,7 @@ async def send_statistics_menu(
         stats,
         period_type,
         scope,
-        selected_date=selected_date,
+        selected_anchor=selected_anchor,
     )
 
 
@@ -1420,7 +1440,7 @@ async def load_statistics_for_user(
     exchange: str,
     direction: str,
     *,
-    selected_date: date | None = None,
+    selected_anchor: date | None = None,
 ):
     async with AsyncSessionLocal() as session:
         filter_hashes = None
@@ -1431,11 +1451,14 @@ async def load_statistics_for_user(
         period_started_to = None
         max_periods = STATISTICS_HISTORY_PERIODS
 
-        if period_type == STAT_PERIOD_HOUR and selected_date is not None:
-            period_started_from, period_started_to = display_date_to_utc_naive_range(
-                selected_date,
+        selected_range = get_statistics_period_range(period_type, selected_anchor)
+
+        if selected_range is not None:
+            period_started_from, period_started_to = display_dates_to_utc_naive_range(
+                selected_range[0],
+                selected_range[1],
             )
-            max_periods = STATISTICS_HOURLY_DATE_PERIODS
+            max_periods = get_statistics_range_max_periods(period_type)
 
         if scope == STAT_SCOPE_FILTER:
             settings = await get_filters(session, telegram_id)
@@ -1632,7 +1655,7 @@ async def send_statistics_message(
     stats,
     period_type: str,
     scope: str,
-    selected_date: date | None = None,
+    selected_anchor: date | None = None,
 ):
     reply_markup = statistics_period_inline_kb(
         period_type,
@@ -1640,7 +1663,7 @@ async def send_statistics_message(
         pair,
         exchange,
         direction,
-        selected_date_label=format_statistics_selected_date(selected_date),
+        selected_period_label=format_statistics_period_anchor(period_type, selected_anchor),
     )
 
     if not pair or not stats:
@@ -1652,17 +1675,21 @@ async def send_statistics_message(
                 stats,
                 period_type,
                 scope,
-                selected_date=selected_date,
+                selected_anchor=selected_anchor,
             ),
             reply_markup=reply_markup,
         )
         return
 
     try:
-        chart = render_p2p_statistics_chart(stats, period_type)
+        chart = render_p2p_statistics_chart(
+            stats,
+            period_type,
+            periods=build_statistics_chart_periods(period_type, selected_anchor),
+        )
     except RuntimeError as error:
         await message.answer(
-            f"{build_statistics_text(pair, exchange, direction, stats, period_type, scope, selected_date=selected_date)}\n\n{escape(str(error))}",
+            f"{build_statistics_text(pair, exchange, direction, stats, period_type, scope, selected_anchor=selected_anchor)}\n\n{escape(str(error))}",
             reply_markup=reply_markup,
         )
         return
@@ -1671,7 +1698,7 @@ async def send_statistics_message(
         BufferedInputFile(chart, filename=f"p2p_statistics_{period_type}.png"),
         caption=(
             f"{format_statistics_scope_title(scope)} · {escape(format_statistics_market_label(pair, exchange, direction))} · "
-            f"{escape(format_statistics_period_label(period_type, selected_date))}\n"
+            f"{escape(format_statistics_period_label(period_type, selected_anchor))}\n"
             f"{build_p2p_statistics_caption(stats, period_type)}"
         ),
         reply_markup=reply_markup,
@@ -1686,7 +1713,7 @@ async def replace_statistics_message(
     stats,
     period_type: str,
     scope: str,
-    selected_date: date | None = None,
+    selected_anchor: date | None = None,
 ):
     try:
         await message.delete()
@@ -1701,7 +1728,7 @@ async def replace_statistics_message(
         stats,
         period_type,
         scope,
-        selected_date=selected_date,
+        selected_anchor=selected_anchor,
     )
 
 
@@ -1931,52 +1958,335 @@ def parse_statistics_period_callback(
     return "", None, None, None, None, None
 
 
-def parse_statistics_date_text(value: str) -> date | None:
+def parse_statistics_period_input(value: str, period_type: str) -> date | None:
     text = str(value or "").strip()
+
+    if period_type == STAT_PERIOD_HOUR:
+        return normalize_statistics_period_anchor(
+            period_type,
+            parse_statistics_date_text(text),
+        )
+
+    if period_type == STAT_PERIOD_DAY:
+        return normalize_statistics_period_anchor(
+            period_type,
+            parse_statistics_month_text(text) or parse_statistics_date_text(text),
+        )
+
+    if period_type in (STAT_PERIOD_WEEK, STAT_PERIOD_MONTH, STAT_PERIOD_YEAR):
+        return normalize_statistics_period_anchor(
+            period_type,
+            parse_statistics_year_text(text)
+            or parse_statistics_month_text(text)
+            or parse_statistics_date_text(text),
+        )
+
+    return None
+
+
+def parse_statistics_date_text(value: str) -> date | None:
     formats = ("%d.%m.%Y", "%d.%m.%y", "%Y-%m-%d")
 
     for date_format in formats:
         try:
-            return datetime.strptime(text, date_format).date()
+            return datetime.strptime(value, date_format).date()
         except ValueError:
             continue
 
     return None
 
 
-def resolve_statistics_date_action(
+def parse_statistics_month_text(value: str) -> date | None:
+    formats = ("%m.%Y", "%m.%y", "%Y-%m")
+
+    for date_format in formats:
+        try:
+            parsed = datetime.strptime(value, date_format).date()
+            return date(parsed.year, parsed.month, 1)
+        except ValueError:
+            continue
+
+    return None
+
+
+def parse_statistics_year_text(value: str) -> date | None:
+    try:
+        parsed_year = int(str(value).strip())
+    except ValueError:
+        return None
+
+    if parsed_year < 2000 or parsed_year > 2100:
+        return None
+
+    return date(parsed_year, 1, 1)
+
+
+def resolve_statistics_period_action(
+    period_type: str,
     action: str,
-    selected_date: date | None,
+    selected_anchor: date | None,
 ) -> date | None:
-    base_date = selected_date or display_today()
+    base_anchor = normalize_statistics_period_anchor(
+        period_type,
+        selected_anchor,
+    ) or current_statistics_period_anchor(period_type)
 
     if action == "prev":
-        return base_date - timedelta(days=1)
+        return shift_statistics_period_anchor(period_type, base_anchor, -1)
 
     if action == "next":
-        return base_date + timedelta(days=1)
+        return shift_statistics_period_anchor(period_type, base_anchor, 1)
 
     if action == "today":
-        return display_today()
+        return current_statistics_period_anchor(period_type)
 
     if action == "clear":
-        return None
+        return current_statistics_period_anchor(period_type)
 
-    return selected_date
+    return base_anchor
 
 
-def format_statistics_selected_date(value: date | None) -> str | None:
+def current_statistics_period_anchor(period_type: str) -> date:
+    return normalize_statistics_period_anchor(period_type, display_today()) or display_today()
+
+
+def shift_statistics_period_anchor(
+    period_type: str,
+    value: date,
+    amount: int,
+) -> date:
+    if period_type == STAT_PERIOD_HOUR:
+        return value + timedelta(days=amount)
+
+    if period_type == STAT_PERIOD_DAY:
+        return add_months(value, amount)
+
+    if period_type in (STAT_PERIOD_WEEK, STAT_PERIOD_MONTH):
+        return date(value.year + amount, 1, 1)
+
+    if period_type == STAT_PERIOD_YEAR:
+        return date(value.year + amount * 10, 1, 1)
+
+    return value
+
+
+def normalize_statistics_period_anchor(
+    period_type: str,
+    value: date | None,
+) -> date | None:
     if value is None:
         return None
 
-    return value.strftime("%d.%m.%Y")
+    if period_type == STAT_PERIOD_HOUR:
+        return value
+
+    if period_type == STAT_PERIOD_DAY:
+        return date(value.year, value.month, 1)
+
+    if period_type in (STAT_PERIOD_WEEK, STAT_PERIOD_MONTH):
+        return date(value.year, 1, 1)
+
+    if period_type == STAT_PERIOD_YEAR:
+        return date((value.year // 10) * 10, 1, 1)
+
+    return value
 
 
-def format_statistics_date_answer(value: date | None) -> str:
+def add_months(value: date, amount: int) -> date:
+    month_index = value.month - 1 + amount
+    year = value.year + month_index // 12
+    month = month_index % 12 + 1
+
+    return date(year, month, 1)
+
+
+def is_future_statistics_anchor(period_type: str, value: date | None) -> bool:
     if value is None:
-        return "Останні 12 годин"
+        return False
 
-    return value.strftime("%d.%m.%Y")
+    current_anchor = current_statistics_period_anchor(period_type)
+    normalized_value = normalize_statistics_period_anchor(period_type, value)
+
+    return normalized_value is not None and normalized_value > current_anchor
+
+
+def get_statistics_period_range(
+    period_type: str,
+    selected_anchor: date | None,
+) -> tuple[date, date] | None:
+    anchor = normalize_statistics_period_anchor(period_type, selected_anchor)
+
+    if anchor is None:
+        return None
+
+    if period_type == STAT_PERIOD_HOUR:
+        return anchor, anchor + timedelta(days=1)
+
+    if period_type == STAT_PERIOD_DAY:
+        return anchor, add_months(anchor, 1)
+
+    if period_type == STAT_PERIOD_WEEK:
+        started_on = anchor - timedelta(days=anchor.weekday())
+        return started_on, date(anchor.year + 1, 1, 1)
+
+    if period_type == STAT_PERIOD_MONTH:
+        return anchor, date(anchor.year + 1, 1, 1)
+
+    if period_type == STAT_PERIOD_YEAR:
+        return anchor, date(anchor.year + 10, 1, 1)
+
+    return None
+
+
+def get_statistics_range_max_periods(period_type: str) -> int:
+    values = {
+        STAT_PERIOD_HOUR: STATISTICS_HOURLY_DATE_PERIODS,
+        STAT_PERIOD_DAY: STATISTICS_DAILY_MONTH_PERIODS,
+        STAT_PERIOD_WEEK: STATISTICS_WEEKLY_YEAR_PERIODS,
+        STAT_PERIOD_MONTH: STATISTICS_MONTHLY_YEAR_PERIODS,
+        STAT_PERIOD_YEAR: STATISTICS_YEARLY_DECADE_PERIODS,
+    }
+
+    return values.get(period_type, STATISTICS_HISTORY_PERIODS)
+
+
+def build_statistics_chart_periods(
+    period_type: str,
+    selected_anchor: date | None,
+) -> list[datetime] | None:
+    selected_range = get_statistics_period_range(period_type, selected_anchor)
+
+    if selected_range is None:
+        return None
+
+    started_on, ended_before = selected_range
+
+    if period_type == STAT_PERIOD_HOUR:
+        started_at, ended_at = display_dates_to_utc_naive_range(
+            started_on,
+            ended_before,
+        )
+        return list_datetime_range(started_at, ended_at, timedelta(hours=1))
+
+    if period_type == STAT_PERIOD_DAY:
+        return [
+            datetime(day.year, day.month, day.day)
+            for day in iter_date_range(started_on, ended_before, timedelta(days=1))
+        ]
+
+    if period_type == STAT_PERIOD_WEEK:
+        return [
+            datetime(day.year, day.month, day.day)
+            for day in iter_date_range(started_on, ended_before, timedelta(days=7))
+        ]
+
+    if period_type == STAT_PERIOD_MONTH:
+        periods = []
+        current = date(started_on.year, started_on.month, 1)
+
+        while current < ended_before:
+            periods.append(datetime(current.year, current.month, 1))
+            current = add_months(current, 1)
+
+        return periods
+
+    if period_type == STAT_PERIOD_YEAR:
+        return [
+            datetime(year, 1, 1)
+            for year in range(started_on.year, ended_before.year)
+        ]
+
+    return None
+
+
+def iter_date_range(started_on: date, ended_before: date, step: timedelta):
+    current = started_on
+
+    while current < ended_before:
+        yield current
+        current += step
+
+
+def list_datetime_range(
+    started_at: datetime,
+    ended_before: datetime,
+    step: timedelta,
+) -> list[datetime]:
+    periods = []
+    current = started_at
+
+    while current < ended_before:
+        periods.append(current)
+        current += step
+
+    return periods
+
+
+def format_statistics_period_anchor(
+    period_type: str,
+    value: date | None,
+) -> str | None:
+    value = normalize_statistics_period_anchor(period_type, value)
+
+    if value is None:
+        return None
+
+    if period_type == STAT_PERIOD_HOUR:
+        return value.strftime("%d.%m.%Y")
+
+    if period_type == STAT_PERIOD_DAY:
+        return value.strftime("%m.%Y")
+
+    if period_type in (STAT_PERIOD_WEEK, STAT_PERIOD_MONTH):
+        return value.strftime("%Y")
+
+    if period_type == STAT_PERIOD_YEAR:
+        return f"{value.year}-{value.year + 9}"
+
+    return value.isoformat()
+
+
+def format_statistics_period_answer(period_type: str, value: date | None) -> str:
+    return format_statistics_period_anchor(period_type, value) or "Останні періоди"
+
+
+def build_statistics_period_input_prompt(period_type: str) -> str:
+    examples = {
+        STAT_PERIOD_HOUR: (
+            "Введіть дату для погодинної статистики у форматі <b>ДД.ММ.РРРР</b>.\n"
+            "Наприклад: <code>04.06.2026</code>"
+        ),
+        STAT_PERIOD_DAY: (
+            "Введіть місяць для денної статистики у форматі <b>ММ.РРРР</b>.\n"
+            "Наприклад: <code>06.2026</code>"
+        ),
+        STAT_PERIOD_WEEK: (
+            "Введіть рік для тижневої статистики у форматі <b>РРРР</b>.\n"
+            "Наприклад: <code>2026</code>"
+        ),
+        STAT_PERIOD_MONTH: (
+            "Введіть рік для місячної статистики у форматі <b>РРРР</b>.\n"
+            "Наприклад: <code>2026</code>"
+        ),
+        STAT_PERIOD_YEAR: (
+            "Введіть будь-який рік потрібного десятиліття у форматі <b>РРРР</b>.\n"
+            "Наприклад: <code>2026</code> покаже 2020-2029."
+        ),
+    }
+
+    return examples.get(period_type, examples[STAT_PERIOD_HOUR])
+
+
+def build_statistics_period_input_error(period_type: str) -> str:
+    examples = {
+        STAT_PERIOD_HOUR: "Не вдалося прочитати дату. Приклад: <code>04.06.2026</code>.",
+        STAT_PERIOD_DAY: "Не вдалося прочитати місяць. Приклад: <code>06.2026</code>.",
+        STAT_PERIOD_WEEK: "Не вдалося прочитати рік. Приклад: <code>2026</code>.",
+        STAT_PERIOD_MONTH: "Не вдалося прочитати рік. Приклад: <code>2026</code>.",
+        STAT_PERIOD_YEAR: "Не вдалося прочитати рік. Приклад: <code>2026</code>.",
+    }
+
+    return examples.get(period_type, examples[STAT_PERIOD_HOUR])
 
 
 def parse_statistics_scope_callback(
@@ -2114,12 +2424,13 @@ def format_statistics_direction_label(direction: str | None) -> str:
 
 def format_statistics_period_label(
     period_type: str,
-    selected_date: date | None = None,
+    selected_anchor: date | None = None,
 ) -> str:
     period_label = STAT_PERIOD_LABELS.get(period_type, period_type)
+    selected_label = format_statistics_period_anchor(period_type, selected_anchor)
 
-    if period_type == STAT_PERIOD_HOUR and selected_date is not None:
-        return f"{period_label} · {format_statistics_selected_date(selected_date)}"
+    if selected_label:
+        return f"{period_label} · {selected_label}"
 
     return period_label
 
@@ -2204,9 +2515,9 @@ def build_statistics_text(
     period_type: str,
     scope: str,
     *,
-    selected_date: date | None = None,
+    selected_anchor: date | None = None,
 ) -> str:
-    period_label = format_statistics_period_label(period_type, selected_date)
+    period_label = format_statistics_period_label(period_type, selected_anchor)
     title = format_statistics_scope_title(scope)
 
     if not pair or not exchange or not direction:

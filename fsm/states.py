@@ -13,6 +13,7 @@ class AppMenu(StatesGroup):
     p2p_pairs = State()
     payment_methods = State()
     statistics = State()
+    statistics_period_input = State()
 
 
 class AdminMenu(StatesGroup):

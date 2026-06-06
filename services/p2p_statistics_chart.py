@@ -35,6 +35,7 @@ CHART_COLORS = (
 def render_p2p_statistics_chart(
     stats: Iterable[P2PPriceStatisticView],
     period_type: str,
+    periods: Iterable[datetime] | None = None,
 ) -> bytes:
     Image, ImageDraw, ImageFont = load_pillow()
     items = sorted(list(stats), key=lambda item: item.period_started_at)
@@ -62,7 +63,7 @@ def render_p2p_statistics_chart(
         font=subtitle_font,
     )
 
-    periods = sorted({item.period_started_at for item in items})
+    periods = build_chart_periods(items, periods)
     values = [decimal_to_float(item.median_price) for item in items]
     y_min, y_max = get_y_bounds(values)
 
@@ -78,6 +79,18 @@ def render_p2p_statistics_chart(
     )
 
     return image_to_png_bytes(image)
+
+
+def build_chart_periods(
+    items: list[P2PPriceStatisticView],
+    periods: Iterable[datetime] | None = None,
+) -> list[datetime]:
+    item_periods = {item.period_started_at for item in items}
+
+    if periods is None:
+        return sorted(item_periods)
+
+    return sorted(set(periods) | item_periods)
 
 
 def build_p2p_statistics_caption(
