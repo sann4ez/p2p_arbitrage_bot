@@ -543,16 +543,6 @@ def statistics_period_inline_kb(
     ]
 
     if range_controls:
-        if selected_period_label:
-            rows.append(
-                [
-                    InlineKeyboardButton(
-                        text=f"{range_controls['label']}: {selected_period_label}",
-                        callback_data=CB_STATS_DATE_PICK,
-                    ),
-                ]
-            )
-
         rows.extend(
             [
                 [
