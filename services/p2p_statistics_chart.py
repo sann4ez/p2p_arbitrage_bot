@@ -59,13 +59,13 @@ def render_p2p_statistics_chart(
     )
     draw.text(
         (52, 72),
-        "Лінія показує медіанний курс за обраними парами",
+        "Лінія показує середній курс за обраними парами",
         fill="#4b5563",
         font=subtitle_font,
     )
 
     periods = build_chart_periods(items, periods)
-    values = [decimal_to_float(item.median_price) for item in items]
+    values = [decimal_to_float(item.avg_price) for item in items]
     y_min, y_max = get_y_bounds(values)
 
     draw_grid(draw, label_font, periods, y_min, y_max, period_type, timezone_name)
@@ -108,7 +108,7 @@ def build_p2p_statistics_caption(
 
     return (
         f"📊 Статистика P2P · {period_label}\n"
-        f"Показник: медіанний курс. Серій: {series_count}. Точок: {len(items)}.\n"
+        f"Показник: середній курс. Серій: {series_count}. Точок: {len(items)}.\n"
         f"Пари: {pairs}"
     )
 
@@ -270,12 +270,12 @@ def draw_series(draw, items, periods, y_min: float, y_max: float, label_font):
 
 
 def build_chart_point(item, periods, y_min: float, y_max: float) -> dict:
-    median_price = decimal_to_float(item.median_price)
+    avg_price = decimal_to_float(item.avg_price)
 
     return {
         "x": x_for_period(item.period_started_at, periods),
-        "y": y_for_value(median_price, y_min, y_max),
-        "label": format_decimal_price(item.median_price),
+        "y": y_for_value(avg_price, y_min, y_max),
+        "label": format_decimal_price(item.avg_price),
     }
 
 
@@ -415,11 +415,11 @@ def format_period_label(
 
 
 def format_price(value: float) -> str:
-    return f"{value:.4f}".rstrip("0").rstrip(".")
+    return f"{value:.2f}"
 
 
 def format_decimal_price(value: Decimal) -> str:
-    return format(value.normalize(), "f").rstrip("0").rstrip(".") or "0"
+    return f"{float(value):.2f}"
 
 
 def decimal_to_float(value: Decimal) -> float:

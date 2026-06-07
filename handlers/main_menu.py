@@ -1545,6 +1545,16 @@ async def load_statistics_for_user(
             )
             max_periods = get_statistics_range_max_periods(period_type)
 
+        closed_period_started_to = get_closed_statistics_period_started_to(
+            period_type,
+            timezone_name=timezone_name,
+        )
+        if closed_period_started_to is not None:
+            period_started_to = min_date_or_none(
+                period_started_to,
+                closed_period_started_to,
+            )
+
         if scope == STAT_SCOPE_FILTER:
             settings = await get_filters(session, telegram_id)
             filter_hashes = await build_user_statistics_filter_hashes(
@@ -1576,6 +1586,47 @@ async def load_statistics_for_user(
         )
 
     return stats
+
+
+def get_closed_statistics_period_started_to(
+    period_type: str,
+    *,
+    timezone_name: str | None = None,
+) -> datetime | None:
+    if period_type == STAT_PERIOD_HOUR:
+        return None
+
+    today = display_today(timezone_name)
+
+    if period_type == STAT_PERIOD_DAY:
+        started_on = today
+    elif period_type == STAT_PERIOD_WEEK:
+        started_on = today - timedelta(days=today.weekday())
+    elif period_type == STAT_PERIOD_MONTH:
+        started_on = date(today.year, today.month, 1)
+    elif period_type == STAT_PERIOD_YEAR:
+        started_on = date(today.year, 1, 1)
+    else:
+        return None
+
+    return display_dates_to_utc_naive_range(
+        started_on,
+        started_on + timedelta(days=1),
+        timezone_name=timezone_name,
+    )[0]
+
+
+def min_date_or_none(
+    first_value: datetime | None,
+    second_value: datetime | None,
+) -> datetime | None:
+    if first_value is None:
+        return second_value
+
+    if second_value is None:
+        return first_value
+
+    return min(first_value, second_value)
 
 
 async def get_user_timezone_name(
@@ -1857,7 +1908,7 @@ def append_statistics_values_to_caption(
         return caption
 
     fiat_code = escape(str(getattr(stats[0], "fiat_code", "") or ""))
-    header = "\n\n<b>Значення:</b> медіана"
+    header = "\n\n<b>Значення:</b> середнє"
     if fiat_code:
         header = f"{header}, {fiat_code}"
 
@@ -1897,7 +1948,7 @@ def build_statistics_known_value_rows(
     return [
         (
             f"{format_statistics_value_period(item.period_started_at, period_type, timezone_name=timezone_name)}: "
-            f"<b>{format_stat_price(item.median_price)}</b>"
+            f"<b>{format_stat_price(item.avg_price)}</b>"
         )
         for item in sorted(stats, key=lambda stat: stat.period_started_at)
     ]
@@ -2739,7 +2790,7 @@ def build_statistics_text(
             [
                 f"<b>{escape(item.exchange_code)} · {escape(item.pair_label)} · {format_stat_side(item.side, item.exchange_code)}</b>",
                 f"Період: {format_stat_period(item, timezone_name=timezone_name)}",
-                f"Мін/медіана/сер/макс: {format_stat_price(item.min_price)} / {format_stat_price(item.median_price)} / {format_stat_price(item.avg_price)} / {format_stat_price(item.max_price)} {escape(item.fiat_code)}",
+                f"Мін/сер/медіана/макс: {format_stat_price(item.min_price)} / {format_stat_price(item.avg_price)} / {format_stat_price(item.median_price)} / {format_stat_price(item.max_price)} {escape(item.fiat_code)}",
                 f"Ордерів: {item.offers_count} · Сканів: {item.scans_count}",
                 "",
             ]
@@ -2800,7 +2851,7 @@ def format_statistics_value_period(
 
 
 def format_stat_price(value) -> str:
-    return f"{float(value):.4f}".rstrip("0").rstrip(".")
+    return f"{float(value):.2f}"
 
 
 def build_user_payment_fiats_text(fiat_currencies) -> str:
