@@ -1,3 +1,5 @@
+from datetime import datetime
+
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import Config
@@ -17,12 +19,14 @@ class UserService:
     async def register_user(
         self,
         telegram_id: int,
-        username: str | None
+        username: str | None,
+        telegram_data: dict | None = None,
     ) -> User:
 
         user = await self.repo.get_or_create(
             telegram_id=telegram_id,
-            username=username
+            username=username,
+            telegram_data=telegram_data,
         )
 
         role_code = self.get_default_role_code(telegram_id)
@@ -33,6 +37,32 @@ class UserService:
 
     async def get_user_by_telegram_id(self, telegram_id: int) -> User | None:
         return await self.repo.get_by_telegram_id(telegram_id)
+
+    async def save_user_location(
+        self,
+        telegram_id: int,
+        username: str | None,
+        telegram_data: dict | None,
+        location_data: dict,
+        location_message_data: dict | None,
+        timezone_name: str | None,
+    ) -> User:
+        user = await self.register_user(
+            telegram_id=telegram_id,
+            username=username,
+            telegram_data=telegram_data,
+        )
+
+        user.location_data = location_data
+        user.location_message_data = location_message_data
+        user.location_latitude = location_data.get("latitude")
+        user.location_longitude = location_data.get("longitude")
+        user.location_timezone = timezone_name
+        user.location_updated_at = datetime.utcnow()
+
+        await self.session.commit()
+
+        return user
 
     async def has_permission(self, telegram_id: int, permission_code: str) -> bool:
         user = await self.get_user_by_telegram_id(telegram_id)

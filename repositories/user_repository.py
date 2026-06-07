@@ -26,12 +26,14 @@ class UserRepository:
     async def create(
         self,
         telegram_id: int,
-        username: str | None
+        username: str | None,
+        telegram_data: dict | None = None,
     ) -> User:
 
         user = User(
             telegram_id=telegram_id,
             username=username,
+            telegram_data=telegram_data,
         )
 
         self.session.add(user)
@@ -55,7 +57,8 @@ class UserRepository:
     async def get_or_create(
         self,
         telegram_id: int,
-        username: str | None
+        username: str | None,
+        telegram_data: dict | None = None,
     ) -> User:
 
         user = await self.get_by_telegram_id(telegram_id)
@@ -64,6 +67,9 @@ class UserRepository:
             if user.username != username:
                 user.username = username
 
+            if telegram_data is not None:
+                user.telegram_data = telegram_data
+
             await self.ensure_settings(user.id)
             await self.session.commit()
 
@@ -71,7 +77,8 @@ class UserRepository:
 
         user = await self.create(
             telegram_id=telegram_id,
-            username=username
+            username=username,
+            telegram_data=telegram_data,
         )
 
         await self.ensure_settings(user.id)

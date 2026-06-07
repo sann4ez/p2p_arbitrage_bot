@@ -36,6 +36,7 @@ def render_p2p_statistics_chart(
     stats: Iterable[P2PPriceStatisticView],
     period_type: str,
     periods: Iterable[datetime] | None = None,
+    timezone_name: str | None = None,
 ) -> bytes:
     Image, ImageDraw, ImageFont = load_pillow()
     items = sorted(list(stats), key=lambda item: item.period_started_at)
@@ -67,7 +68,7 @@ def render_p2p_statistics_chart(
     values = [decimal_to_float(item.median_price) for item in items]
     y_min, y_max = get_y_bounds(values)
 
-    draw_grid(draw, label_font, periods, y_min, y_max, period_type)
+    draw_grid(draw, label_font, periods, y_min, y_max, period_type, timezone_name)
     draw_series(draw, items, periods, y_min, y_max, small_font)
     draw_legend(draw, small_font, group_statistics(items))
 
@@ -198,7 +199,15 @@ def render_empty_chart(Image, ImageDraw, ImageFont, period_type: str) -> bytes:
     return image_to_png_bytes(image)
 
 
-def draw_grid(draw, font, periods, y_min: float, y_max: float, period_type: str):
+def draw_grid(
+    draw,
+    font,
+    periods,
+    y_min: float,
+    y_max: float,
+    period_type: str,
+    timezone_name: str | None = None,
+):
     draw.rectangle(
         (PLOT_LEFT, PLOT_TOP, PLOT_RIGHT, PLOT_BOTTOM),
         outline="#d1d5db",
@@ -227,7 +236,7 @@ def draw_grid(draw, font, periods, y_min: float, y_max: float, period_type: str)
         period = periods[index]
         x = x_for_period(period, periods)
         draw.line((x, PLOT_BOTTOM, x, PLOT_BOTTOM + 8), fill="#9ca3af", width=1)
-        label = format_period_label(period, period_type)
+        label = format_period_label(period, period_type, timezone_name)
         text_width = text_size(draw, label, font)[0]
         draw.text(
             (x - text_width / 2, PLOT_BOTTOM + 16),
@@ -383,8 +392,12 @@ def format_side(side: str, exchange_code: str | None = None) -> str:
     return labels.get(str(side).upper(), str(side).lower())
 
 
-def format_period_label(value: datetime, period_type: str) -> str:
-    value = display_datetime(value)
+def format_period_label(
+    value: datetime,
+    period_type: str,
+    timezone_name: str | None = None,
+) -> str:
+    value = display_datetime(value, timezone_name=timezone_name)
 
     if period_type == STAT_PERIOD_HOUR:
         return value.strftime("%d.%m %H:%M")

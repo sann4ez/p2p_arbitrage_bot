@@ -5,6 +5,7 @@ from aiogram.types import Message
 
 from db.base import AsyncSessionLocal
 from services.menu_service import root_menu_for_user
+from services.telegram_payloads import dump_telegram_model
 from services.user_service import UserService
 
 router = Router()
@@ -20,7 +21,8 @@ async def start_handler(message: Message, state: FSMContext):
 
         await service.register_user(
             telegram_id=message.from_user.id,
-            username=message.from_user.username
+            username=message.from_user.username,
+            telegram_data=dump_telegram_model(message.from_user),
         )
 
     await message.answer(
