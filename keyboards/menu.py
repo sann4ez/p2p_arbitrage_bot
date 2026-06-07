@@ -35,6 +35,7 @@ BTN_ADD_FIAT_CURRENCY = "➕ Додати фіат"
 BTN_ADD_CRYPTO_CURRENCY = "➕ Додати крипту"
 BTN_LIST_CURRENCIES = "📋 Список валют"
 BTN_MY_INFO = "ℹ️ Інфо про себе"
+BTN_SHARE_LOCATION = "📍 Поділитися геолокацією"
 BTN_P2P_FILTERS = "⚙️ Фільтри P2P"
 BTN_P2P_PAIRS = "💹 Мої P2P пари"
 BTN_USER_PAYMENT_METHODS = "🏦 Мої банки"
@@ -169,6 +170,9 @@ def cabinet_kb():
             [
                 KeyboardButton(text=BTN_P2P_PAIRS),
                 KeyboardButton(text=BTN_USER_PAYMENT_METHODS),
+            ],
+            [
+                KeyboardButton(text=BTN_SHARE_LOCATION, request_location=True),
             ],
             [
                 KeyboardButton(text=BTN_BACK),

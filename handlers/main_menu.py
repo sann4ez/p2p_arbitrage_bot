@@ -37,6 +37,7 @@ from keyboards.menu import (
     BTN_P2P_FILTERS,
     BTN_P2P_PAIRS,
     BTN_RESET_FILTERS,
+    BTN_SHARE_LOCATION,
     BTN_STATISTICS,
     CB_P2P_PAIR_BACK,
     CB_P2P_PAIR_CRYPTO_PREFIX,
@@ -139,6 +140,8 @@ from services.p2p_statistics_chart import (
     render_p2p_statistics_chart,
 )
 from services.statistics_settings_service import StatisticsSettingsService
+from services.telegram_payloads import dump_telegram_model
+from services.timezone_resolver import resolve_timezone_from_coordinates
 from services.time_utils import (
     display_dates_to_utc_naive_range,
     display_datetime,
@@ -324,28 +327,61 @@ async def back_to_main_menu(message: types.Message, state: FSMContext):
 
 @router.message(F.text == BTN_MY_INFO)
 async def my_info(message: types.Message):
+    telegram_data = dump_telegram_model(message.from_user)
+
     async with AsyncSessionLocal() as session:
         service = UserService(session)
-        user = await service.get_user_by_telegram_id(message.from_user.id)
+        user = await service.register_user(
+            telegram_id=message.from_user.id,
+            username=message.from_user.username,
+            telegram_data=telegram_data,
+        )
         roles = await service.get_user_role_codes(message.from_user.id)
 
     if not user:
         await message.answer("Профіль ще не створено. Натисніть /start.")
         return
 
-    username = f"@{user.username}" if user.username else "не вказано"
-    notifications = "увімкнені" if user.is_notifications_enabled else "вимкнені"
-    roles_text = ", ".join(roles) if roles else "немає"
-    telegram_user_text = format_telegram_user_data(message.from_user)
+    await send_profile_info(message, user, roles)
+
+
+@router.message(F.location)
+async def save_user_location(message: types.Message, state: FSMContext):
+    if not message.from_user or not message.location:
+        return
+
+    await state.set_state(AppMenu.cabinet)
+
+    telegram_data = dump_telegram_model(message.from_user)
+    location_data = dump_telegram_model(message.location) or {}
+    location_message_data = dump_telegram_model(message)
+    timezone_name = resolve_timezone_from_coordinates(
+        location_data.get("latitude"),
+        location_data.get("longitude"),
+    )
+
+    async with AsyncSessionLocal() as session:
+        service = UserService(session)
+        user = await service.save_user_location(
+            telegram_id=message.from_user.id,
+            username=message.from_user.username,
+            telegram_data=telegram_data,
+            location_data=location_data,
+            location_message_data=location_message_data,
+            timezone_name=timezone_name,
+        )
 
     await message.answer(
-        "<b>Інфо про себе</b>\n\n"
-        f"Telegram ID: <code>{user.telegram_id}</code>\n"
-        f"Username: {escape(username)}\n"
-        f"Ролі: {escape(roles_text)}\n"
-        f"Сповіщення: {notifications}\n"
-        f"Дата реєстрації: {user.created_at:%Y-%m-%d %H:%M}\n\n"
-        f"<b>Дані Telegram</b>\n{telegram_user_text}",
+        build_location_saved_text(user),
+        reply_markup=cabinet_kb(),
+    )
+
+
+@router.message(F.text == BTN_SHARE_LOCATION)
+async def share_location_help(message: types.Message):
+    await message.answer(
+        "Натисніть кнопку нижче і підтвердьте відправку геолокації. "
+        "Після цього бот збереже координати, timezone і сирі Telegram-дані.",
         reply_markup=cabinet_kb(),
     )
 
@@ -537,11 +573,15 @@ async def statistics_period_callback(
         await callback.answer("Спочатку оберіть біржу і напрямок", show_alert=True)
         return
 
+    timezone_name = await get_user_timezone_name(callback.from_user.id)
     selected_anchor = normalize_statistics_period_anchor(
         period_type,
         await get_statistics_period_anchor(state, period_type=period_type),
     )
-    selected_anchor = selected_anchor or current_statistics_period_anchor(period_type)
+    selected_anchor = selected_anchor or current_statistics_period_anchor(
+        period_type,
+        timezone_name,
+    )
     await set_statistics_view_context(state, scope, period_type, selected_anchor)
 
     stats = await load_statistics_for_user(
@@ -552,6 +592,7 @@ async def statistics_period_callback(
         exchange,
         direction,
         selected_anchor=selected_anchor,
+        timezone_name=timezone_name,
     )
 
     await callback.answer(STAT_PERIOD_LABELS.get(period_type, period_type))
@@ -566,6 +607,7 @@ async def statistics_period_callback(
             period_type,
             scope,
             selected_anchor=selected_anchor,
+            timezone_name=timezone_name,
         )
 
 
@@ -600,14 +642,20 @@ async def statistics_date_callback(
         await callback.answer("Спочатку оберіть пару, біржу і напрямок", show_alert=True)
         return
 
+    timezone_name = await get_user_timezone_name(callback.from_user.id)
     current_anchor = await get_statistics_period_anchor(state)
     selected_anchor = resolve_statistics_period_action(
         period_type,
         action,
         current_anchor,
+        timezone_name=timezone_name,
     )
 
-    if action == "next" and is_future_statistics_anchor(period_type, selected_anchor):
+    if action == "next" and is_future_statistics_anchor(
+        period_type,
+        selected_anchor,
+        timezone_name=timezone_name,
+    ):
         await callback.answer("Це майбутній період", show_alert=True)
         return
 
@@ -622,6 +670,7 @@ async def statistics_date_callback(
         exchange,
         direction,
         selected_anchor=selected_anchor,
+        timezone_name=timezone_name,
     )
 
     await callback.answer(format_statistics_period_answer(period_type, selected_anchor))
@@ -636,6 +685,7 @@ async def statistics_date_callback(
             period_type,
             scope,
             selected_anchor=selected_anchor,
+            timezone_name=timezone_name,
         )
 
 
@@ -686,7 +736,11 @@ async def statistics_scope_callback(
         await callback.answer("Спочатку оберіть біржу і напрямок", show_alert=True)
         return
 
-    selected_anchor = current_statistics_period_anchor(STAT_PERIOD_DAY)
+    timezone_name = await get_user_timezone_name(callback.from_user.id)
+    selected_anchor = current_statistics_period_anchor(
+        STAT_PERIOD_DAY,
+        timezone_name,
+    )
     await set_statistics_view_context(state, scope, STAT_PERIOD_DAY, selected_anchor)
 
     stats = await load_statistics_for_user(
@@ -697,6 +751,7 @@ async def statistics_scope_callback(
         exchange,
         direction,
         selected_anchor=selected_anchor,
+        timezone_name=timezone_name,
     )
 
     await callback.answer(format_statistics_scope_title(scope))
@@ -711,6 +766,7 @@ async def statistics_scope_callback(
             STAT_PERIOD_DAY,
             scope,
             selected_anchor=selected_anchor,
+            timezone_name=timezone_name,
         )
 
 
@@ -727,7 +783,13 @@ async def statistics_date_input(message: types.Message, state: FSMContext):
         await message.answer(build_statistics_period_input_error(period_type))
         return
 
-    if is_future_statistics_anchor(period_type, selected_anchor):
+    timezone_name = await get_user_timezone_name(message.from_user.id)
+
+    if is_future_statistics_anchor(
+        period_type,
+        selected_anchor,
+        timezone_name=timezone_name,
+    ):
         await message.answer("Це майбутній період. Введіть поточний або минулий період.")
         return
 
@@ -751,6 +813,7 @@ async def statistics_date_input(message: types.Message, state: FSMContext):
         exchange,
         direction,
         selected_anchor=selected_anchor,
+        timezone_name=timezone_name,
     )
 
     await send_statistics_message(
@@ -762,6 +825,7 @@ async def statistics_date_input(message: types.Message, state: FSMContext):
         period_type,
         scope,
         selected_anchor=selected_anchor,
+        timezone_name=timezone_name,
     )
 
 
@@ -1417,7 +1481,11 @@ async def send_statistics_menu(
     if pair is None or not exchange or not direction:
         return
 
-    selected_anchor = selected_anchor or current_statistics_period_anchor(period_type)
+    timezone_name = await get_user_timezone_name(message.from_user.id)
+    selected_anchor = selected_anchor or current_statistics_period_anchor(
+        period_type,
+        timezone_name,
+    )
 
     stats = await load_statistics_for_user(
         message.from_user.id,
@@ -1427,6 +1495,7 @@ async def send_statistics_menu(
         exchange,
         direction,
         selected_anchor=selected_anchor,
+        timezone_name=timezone_name,
     )
 
     await send_statistics_message(
@@ -1438,6 +1507,7 @@ async def send_statistics_menu(
         period_type,
         scope,
         selected_anchor=selected_anchor,
+        timezone_name=timezone_name,
     )
 
 
@@ -1450,8 +1520,13 @@ async def load_statistics_for_user(
     direction: str,
     *,
     selected_anchor: date | None = None,
+    timezone_name: str | None = None,
 ):
     async with AsyncSessionLocal() as session:
+        timezone_name = timezone_name or await get_user_timezone_name(
+            telegram_id,
+            session=session,
+        )
         filter_hashes = None
         query_pairs = [pair]
         exchange_code = format_statistics_exchange_code(exchange)
@@ -1466,6 +1541,7 @@ async def load_statistics_for_user(
             period_started_from, period_started_to = display_dates_to_utc_naive_range(
                 selected_range[0],
                 selected_range[1],
+                timezone_name=timezone_name,
             )
             max_periods = get_statistics_range_max_periods(period_type)
 
@@ -1500,6 +1576,20 @@ async def load_statistics_for_user(
         )
 
     return stats
+
+
+async def get_user_timezone_name(
+    telegram_id: int,
+    *,
+    session=None,
+) -> str | None:
+    if session is not None:
+        user = await UserService(session).get_user_by_telegram_id(telegram_id)
+        return user.location_timezone if user else None
+
+    async with AsyncSessionLocal() as session:
+        user = await UserService(session).get_user_by_telegram_id(telegram_id)
+        return user.location_timezone if user else None
 
 
 async def build_global_statistics_filter_hashes(
@@ -1665,6 +1755,7 @@ async def send_statistics_message(
     period_type: str,
     scope: str,
     selected_anchor: date | None = None,
+    timezone_name: str | None = None,
 ):
     reply_markup = statistics_period_inline_kb(
         period_type,
@@ -1685,6 +1776,7 @@ async def send_statistics_message(
                 period_type,
                 scope,
                 selected_anchor=selected_anchor,
+                timezone_name=timezone_name,
             ),
             reply_markup=reply_markup,
         )
@@ -1694,11 +1786,16 @@ async def send_statistics_message(
         chart = render_p2p_statistics_chart(
             stats,
             period_type,
-            periods=build_statistics_chart_periods(period_type, selected_anchor),
+            periods=build_statistics_chart_periods(
+                period_type,
+                selected_anchor,
+                timezone_name=timezone_name,
+            ),
+            timezone_name=timezone_name,
         )
     except RuntimeError as error:
         await message.answer(
-            f"{build_statistics_text(pair, exchange, direction, stats, period_type, scope, selected_anchor=selected_anchor)}\n\n{escape(str(error))}",
+            f"{build_statistics_text(pair, exchange, direction, stats, period_type, scope, selected_anchor=selected_anchor, timezone_name=timezone_name)}\n\n{escape(str(error))}",
             reply_markup=reply_markup,
         )
         return
@@ -1711,7 +1808,12 @@ async def send_statistics_message(
 
     await message.answer_photo(
         BufferedInputFile(chart, filename=f"p2p_statistics_{period_type}.png"),
-        caption=append_statistics_values_to_caption(caption, stats, period_type),
+        caption=append_statistics_values_to_caption(
+            caption,
+            stats,
+            period_type,
+            timezone_name=timezone_name,
+        ),
         reply_markup=reply_markup,
     )
 
@@ -1724,6 +1826,7 @@ async def replace_statistics_message(
     period_type: str,
     scope: str,
     selected_anchor: date | None = None,
+    timezone_name: str | None = None,
 ):
     try:
         await message.delete()
@@ -1739,6 +1842,7 @@ async def replace_statistics_message(
         period_type,
         scope,
         selected_anchor=selected_anchor,
+        timezone_name=timezone_name,
     )
 
 
@@ -1746,6 +1850,8 @@ def append_statistics_values_to_caption(
     caption: str,
     stats,
     period_type: str,
+    *,
+    timezone_name: str | None = None,
 ) -> str:
     if not stats:
         return caption
@@ -1760,7 +1866,11 @@ def append_statistics_values_to_caption(
     if len(result) > TELEGRAM_PHOTO_CAPTION_LIMIT:
         return caption
 
-    rows = build_statistics_known_value_rows(stats, period_type)
+    rows = build_statistics_known_value_rows(
+        stats,
+        period_type,
+        timezone_name=timezone_name,
+    )
     added_rows = 0
 
     for row in rows:
@@ -1778,10 +1888,15 @@ def append_statistics_values_to_caption(
     return result
 
 
-def build_statistics_known_value_rows(stats, period_type: str) -> list[str]:
+def build_statistics_known_value_rows(
+    stats,
+    period_type: str,
+    *,
+    timezone_name: str | None = None,
+) -> list[str]:
     return [
         (
-            f"{format_statistics_value_period(item.period_started_at, period_type)}: "
+            f"{format_statistics_value_period(item.period_started_at, period_type, timezone_name=timezone_name)}: "
             f"<b>{format_stat_price(item.median_price)}</b>"
         )
         for item in sorted(stats, key=lambda stat: stat.period_started_at)
@@ -2081,11 +2196,13 @@ def resolve_statistics_period_action(
     period_type: str,
     action: str,
     selected_anchor: date | None,
+    *,
+    timezone_name: str | None = None,
 ) -> date | None:
     base_anchor = normalize_statistics_period_anchor(
         period_type,
         selected_anchor,
-    ) or current_statistics_period_anchor(period_type)
+    ) or current_statistics_period_anchor(period_type, timezone_name)
 
     if action == "prev":
         return shift_statistics_period_anchor(period_type, base_anchor, -1)
@@ -2094,16 +2211,21 @@ def resolve_statistics_period_action(
         return shift_statistics_period_anchor(period_type, base_anchor, 1)
 
     if action == "today":
-        return current_statistics_period_anchor(period_type)
+        return current_statistics_period_anchor(period_type, timezone_name)
 
     if action == "clear":
-        return current_statistics_period_anchor(period_type)
+        return current_statistics_period_anchor(period_type, timezone_name)
 
     return base_anchor
 
 
-def current_statistics_period_anchor(period_type: str) -> date:
-    return normalize_statistics_period_anchor(period_type, display_today()) or display_today()
+def current_statistics_period_anchor(
+    period_type: str,
+    timezone_name: str | None = None,
+) -> date:
+    today = display_today(timezone_name)
+
+    return normalize_statistics_period_anchor(period_type, today) or today
 
 
 def shift_statistics_period_anchor(
@@ -2156,11 +2278,16 @@ def add_months(value: date, amount: int) -> date:
     return date(year, month, 1)
 
 
-def is_future_statistics_anchor(period_type: str, value: date | None) -> bool:
+def is_future_statistics_anchor(
+    period_type: str,
+    value: date | None,
+    *,
+    timezone_name: str | None = None,
+) -> bool:
     if value is None:
         return False
 
-    current_anchor = current_statistics_period_anchor(period_type)
+    current_anchor = current_statistics_period_anchor(period_type, timezone_name)
     normalized_value = normalize_statistics_period_anchor(period_type, value)
 
     return normalized_value is not None and normalized_value > current_anchor
@@ -2209,6 +2336,8 @@ def get_statistics_range_max_periods(period_type: str) -> int:
 def build_statistics_chart_periods(
     period_type: str,
     selected_anchor: date | None,
+    *,
+    timezone_name: str | None = None,
 ) -> list[datetime] | None:
     selected_range = get_statistics_period_range(period_type, selected_anchor)
 
@@ -2221,6 +2350,7 @@ def build_statistics_chart_periods(
         started_at, ended_at = display_dates_to_utc_naive_range(
             started_on,
             ended_before,
+            timezone_name=timezone_name,
         )
         return list_datetime_range(started_at, ended_at, timedelta(hours=1))
 
@@ -2572,6 +2702,7 @@ def build_statistics_text(
     scope: str,
     *,
     selected_anchor: date | None = None,
+    timezone_name: str | None = None,
 ) -> str:
     period_label = format_statistics_period_label(period_type, selected_anchor)
     title = format_statistics_scope_title(scope)
@@ -2607,7 +2738,7 @@ def build_statistics_text(
         rows.extend(
             [
                 f"<b>{escape(item.exchange_code)} · {escape(item.pair_label)} · {format_stat_side(item.side, item.exchange_code)}</b>",
-                f"Період: {format_stat_period(item)}",
+                f"Період: {format_stat_period(item, timezone_name=timezone_name)}",
                 f"Мін/медіана/сер/макс: {format_stat_price(item.min_price)} / {format_stat_price(item.median_price)} / {format_stat_price(item.avg_price)} / {format_stat_price(item.max_price)} {escape(item.fiat_code)}",
                 f"Ордерів: {item.offers_count} · Сканів: {item.scans_count}",
                 "",
@@ -2632,9 +2763,9 @@ def format_stat_side(side: str, exchange_code: str | None = None) -> str:
     return labels.get(str(side).upper(), str(side))
 
 
-def format_stat_period(item) -> str:
-    started_at = display_datetime(item.period_started_at)
-    ended_at = display_datetime(item.period_ended_at)
+def format_stat_period(item, *, timezone_name: str | None = None) -> str:
+    started_at = display_datetime(item.period_started_at, timezone_name=timezone_name)
+    ended_at = display_datetime(item.period_ended_at, timezone_name=timezone_name)
 
     return (
         f"{started_at:%Y-%m-%d %H:%M} - "
@@ -2642,8 +2773,13 @@ def format_stat_period(item) -> str:
     )
 
 
-def format_statistics_value_period(value: datetime, period_type: str) -> str:
-    display_value = display_datetime(value)
+def format_statistics_value_period(
+    value: datetime,
+    period_type: str,
+    *,
+    timezone_name: str | None = None,
+) -> str:
+    display_value = display_datetime(value, timezone_name=timezone_name)
 
     if period_type == STAT_PERIOD_HOUR:
         return display_value.strftime("%H:%M")
@@ -2765,8 +2901,74 @@ def parse_optional_float(value: str) -> float | None:
     return None if value == "none" else float(value)
 
 
-def format_telegram_user_data(telegram_user: types.User) -> str:
-    data = telegram_user.model_dump(exclude_none=True)
+async def send_profile_info(message: types.Message, user, roles: list[str]):
+    await message.answer(
+        build_profile_summary_text(user, roles),
+        reply_markup=cabinet_kb(),
+    )
+
+
+def build_profile_summary_text(user, roles: list[str]) -> str:
+    username = f"@{user.username}" if user.username else "не вказано"
+    notifications = "увімкнені" if user.is_notifications_enabled else "вимкнені"
+    roles_text = ", ".join(roles) if roles else "немає"
+    telegram_user_text = format_telegram_user_data(user.telegram_data)
+    location_text = format_user_location_data(user)
+
+    return (
+        "<b>Інфо про себе</b>\n\n"
+        f"Telegram ID: <code>{user.telegram_id}</code>\n"
+        f"Username: {escape(username)}\n"
+        f"Ролі: {escape(roles_text)}\n"
+        f"Сповіщення: {notifications}\n"
+        f"Дата реєстрації: {user.created_at:%Y-%m-%d %H:%M}\n\n"
+        f"{location_text}\n\n"
+        f"<b>Дані Telegram</b>\n{telegram_user_text}"
+    )
+
+
+def build_location_saved_text(user) -> str:
+    timezone_text = user.location_timezone or "не визначено"
+
+    return (
+        "<b>Геолокацію збережено</b>\n\n"
+        f"Timezone: <code>{escape(timezone_text)}</code>"
+    )
+
+
+def format_user_location_data(user) -> str:
+    if not user.location_data:
+        return (
+            "<b>Геолокація</b>\n"
+            "• Статус: ще не збережена\n"
+            "• Щоб визначити timezone, натисніть “📍 Поділитися геолокацією”."
+        )
+
+    rows = [
+        f"• Timezone: <code>{escape(user.location_timezone or 'не визначено')}</code>",
+    ]
+
+    if user.location_updated_at:
+        rows.append(f"• Оновлено: {user.location_updated_at:%Y-%m-%d %H:%M}")
+
+    return "<b>Геолокація</b>\n" + "\n".join(rows)
+
+
+def format_optional_value(value) -> str:
+    if value is None:
+        return "не передано"
+
+    return escape(str(value))
+
+
+def format_telegram_user_data(telegram_user: types.User | dict | None) -> str:
+    if telegram_user is None:
+        return "Telegram не передав додаткових даних."
+
+    if isinstance(telegram_user, dict):
+        data = telegram_user
+    else:
+        data = telegram_user.model_dump(exclude_none=False)
 
     if not data:
         return "Telegram не передав додаткових даних."
@@ -2811,6 +3013,9 @@ def format_telegram_extra_fields(data: dict) -> str:
 
 
 def format_telegram_value(key: str, value) -> str:
+    if value is None:
+        return "не передано"
+
     if isinstance(value, bool):
         return "✅ так" if value else "❌ ні"
 
