@@ -5,6 +5,7 @@ from db.dto import P2POrderMessage
 from services.okx_order_payload import (
     get_okx_order_description_values,
     get_okx_order_id,
+    get_okx_order_payment_timeout,
 )
 
 
@@ -114,7 +115,7 @@ def build_okx_order_message(
         orders_count=ad.get("completedOrderQuantity"),
         rating=rating,
         completion_rate=completion_rate,
-        trade_minutes=ad.get("paymentTimeoutMinutes"),
+        trade_minutes=get_okx_order_payment_timeout(ad),
         description=format_order_description(*get_okx_order_description_values(ad)),
         order_url=build_okx_order_url(ad, side, asset=asset, fiat=fiat),
     )
