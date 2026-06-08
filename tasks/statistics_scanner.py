@@ -3,6 +3,7 @@ import logging
 
 from db.base import AsyncSessionLocal
 from db.dto import P2PUserPair
+from services.admin_notifier import notify_admins
 from services.p2p_filters import get_fetch_order_count
 from services.p2p_scan_runner import fetch_filtered_p2p_orders
 from services.p2p_statistics_service import (
@@ -25,8 +26,16 @@ async def run_global_statistics_scheduler():
             interval_seconds = await run_global_statistics_scan_once()
         except asyncio.CancelledError:
             raise
-        except Exception:
+        except Exception as error:
             logger.exception("Global P2P statistics scan failed")
+            await notify_admins(
+                "Помилка глобального сканера статистики",
+                (
+                    "Фоновий збір P2P-статистики завершився помилкою: "
+                    f"{type(error).__name__}: {error}"
+                ),
+                key="global_statistics_scan_failed",
+            )
 
         await asyncio.sleep(max(interval_seconds, 60))
 

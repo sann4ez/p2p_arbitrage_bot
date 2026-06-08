@@ -8,6 +8,7 @@ from config import Config
 
 from db.bootstrap import bootstrap_database
 from handlers import register_routes
+from services.admin_notifier import configure_admin_notifier
 from tasks.statistics_scanner import run_global_statistics_scheduler
 
 logging.basicConfig(
@@ -19,6 +20,7 @@ async def main():
     await bootstrap_database()
 
     bot = Bot(token=Config.TELEGRAM_TOKEN, default=DefaultBotProperties(parse_mode="HTML"))
+    configure_admin_notifier(bot)
     dp = Dispatcher()
 
     register_routes(dp)

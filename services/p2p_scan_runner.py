@@ -154,6 +154,10 @@ async def apply_common_filters(
             settings,
             limit=limit,
             prepare_batch=prepare_description_batch,
+            allow_missing_descriptions=should_allow_missing_descriptions(
+                driver,
+                side,
+            ),
         )
 
     selected = filtered[:limit]
@@ -171,6 +175,13 @@ async def apply_common_filters(
         driver.count_descriptions(selected),
     )
     return selected
+
+
+def should_allow_missing_descriptions(driver: P2PExchangeDriver, side: str) -> bool:
+    return (
+        driver.exchange == "okx"
+        and str(side).lower() == str(driver.fiat_to_crypto_side).lower()
+    )
 
 
 async def attach_order_details(

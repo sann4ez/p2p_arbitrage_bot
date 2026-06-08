@@ -35,17 +35,20 @@ async def filter_orders_by_description(
     orders: list[dict],
     exchange: str,
     settings: P2PFilterSettings,
+    *,
+    allow_missing_descriptions: bool = False,
 ) -> list[dict]:
     mode = normalize_description_check_mode(settings.description_check_mode)
 
     logger.info(
-        "P2P description filter start: exchange=%s orders=%s mode=%s allow_split=%s allow_third_party=%s allow_monobank_jar=%s",
+        "P2P description filter start: exchange=%s orders=%s mode=%s allow_split=%s allow_third_party=%s allow_monobank_jar=%s allow_missing_descriptions=%s",
         exchange,
         len(orders),
         mode,
         settings.allow_split_payments,
         settings.allow_third_party_payments,
         settings.allow_monobank_jar_payments,
+        allow_missing_descriptions,
     )
 
     if not needs_description_filtering(settings):
@@ -60,7 +63,11 @@ async def filter_orders_by_description(
         filtered_orders = [
             order
             for order in filter_orders(orders, exchange, settings)
-            if not should_block_missing_description(order, exchange)
+            if not should_block_missing_description(
+                order,
+                exchange,
+                allow_missing_descriptions=allow_missing_descriptions,
+            )
         ]
         logger.info(
             "P2P description filter regex result: exchange=%s input=%s output=%s blocked=%s reasons=%s",
@@ -141,7 +148,11 @@ async def filter_orders_by_description(
         filtered_orders = [
             order
             for order in fallback_orders
-            if not should_block_missing_description(order, exchange)
+            if not should_block_missing_description(
+                order,
+                exchange,
+                allow_missing_descriptions=allow_missing_descriptions,
+            )
         ]
         logger.warning(
             "P2P description filter GPT fallback to regex: exchange=%s input=%s output=%s reason=no_classifications",
@@ -173,7 +184,11 @@ async def filter_orders_by_description(
         if not classification:
             missing_classifications += 1
 
-            if should_block_missing_description(order, exchange):
+            if should_block_missing_description(
+                order,
+                exchange,
+                allow_missing_descriptions=allow_missing_descriptions,
+            ):
                 missing_descriptions_blocked += 1
                 continue
 
@@ -253,6 +268,7 @@ async def filter_orders_by_description_until(
     *,
     limit: int,
     prepare_batch: Callable[[list[dict]], Awaitable[None]],
+    allow_missing_descriptions: bool = False,
 ) -> list[dict]:
     if limit <= 0 or not orders:
         return []
@@ -264,17 +280,23 @@ async def filter_orders_by_description_until(
     batch_size = get_description_filter_batch_size(limit)
 
     logger.info(
-        "P2P description filter progressive start: exchange=%s input=%s limit=%s batch_size=%s",
+        "P2P description filter progressive start: exchange=%s input=%s limit=%s batch_size=%s allow_missing_descriptions=%s",
         exchange,
         len(orders),
         limit,
         batch_size,
+        allow_missing_descriptions,
     )
 
     for start in range(0, len(orders), batch_size):
         batch = orders[start:start + batch_size]
         await prepare_batch(batch)
-        filtered_batch = await filter_orders_by_description(batch, exchange, settings)
+        filtered_batch = await filter_orders_by_description(
+            batch,
+            exchange,
+            settings,
+            allow_missing_descriptions=allow_missing_descriptions,
+        )
         selected_orders.extend(filtered_batch)
 
         logger.info(
@@ -343,8 +365,17 @@ def order_matches_regex_description(
     return True
 
 
-def should_block_missing_description(order: dict, exchange: str) -> bool:
-    return exchange == "okx" and not get_order_description(order, exchange)
+def should_block_missing_description(
+    order: dict,
+    exchange: str,
+    *,
+    allow_missing_descriptions: bool = False,
+) -> bool:
+    return (
+        not allow_missing_descriptions
+        and exchange == "okx"
+        and not get_order_description(order, exchange)
+    )
 
 
 def get_order_description(order: dict, exchange: str) -> str | None:
