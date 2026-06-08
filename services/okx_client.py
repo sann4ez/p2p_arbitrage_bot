@@ -5,6 +5,7 @@ import time
 import aiohttp
 
 from config import Config
+from services.admin_notifier import notify_admins
 from services.okx_order_payload import flatten_okx_detail
 
 logger = logging.getLogger(__name__)
@@ -251,6 +252,16 @@ async def _fetch_okx_p2p_detail(
         last_body[:300],
     )
 
+    if is_okx_authorization_expired(last_status, last_body):
+        await notify_admins(
+            "OKX Authorization токен протух",
+            (
+                "OKX повернув Token expired під час отримання опису P2P-ордера. "
+                "Оновіть OKX_AUTHORIZATION у змінних середовища і перезапустіть бота."
+            ),
+            key="okx_authorization_expired",
+        )
+
     return order_id, {}
 
 
@@ -323,3 +334,15 @@ def is_okx_success_response(data: dict) -> bool:
         return True
 
     return "data" in data and "code" not in data and "error_code" not in data
+
+
+def is_okx_authorization_expired(status: int | None, body: str | None) -> bool:
+    if status not in (401, 403):
+        return False
+
+    normalized_body = (body or "").lower()
+    return (
+        "token expired" in normalized_body
+        or '"code":800' in normalized_body
+        or '"error_code":"800"' in normalized_body
+    )
