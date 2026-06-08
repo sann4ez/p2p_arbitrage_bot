@@ -137,6 +137,8 @@ from services.p2p_statistics_service import (
 )
 from services.p2p_statistics_chart import (
     build_p2p_statistics_caption,
+    get_statistics_metric_label,
+    get_statistics_metric_value,
     render_p2p_statistics_chart,
 )
 from services.statistics_settings_service import StatisticsSettingsService
@@ -1908,7 +1910,7 @@ def append_statistics_values_to_caption(
         return caption
 
     fiat_code = escape(str(getattr(stats[0], "fiat_code", "") or ""))
-    header = "\n\n<b>Значення:</b> середнє"
+    header = f"\n\n<b>Значення:</b> {get_statistics_metric_label(period_type)}"
     if fiat_code:
         header = f"{header}, {fiat_code}"
 
@@ -1948,7 +1950,7 @@ def build_statistics_known_value_rows(
     return [
         (
             f"{format_statistics_value_period(item.period_started_at, period_type, timezone_name=timezone_name)}: "
-            f"<b>{format_stat_price(item.avg_price)}</b>"
+            f"<b>{format_stat_price(get_statistics_metric_value(item, period_type))}</b>"
         )
         for item in sorted(stats, key=lambda stat: stat.period_started_at)
     ]
