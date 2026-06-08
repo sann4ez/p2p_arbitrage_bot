@@ -24,7 +24,10 @@ from db.dto import (
 )
 from db.models import UserSettings
 from repositories.user_repository import UserRepository
-from services.okx_order_payload import get_okx_order_description_values
+from services.okx_order_payload import (
+    get_okx_order_description_values,
+    get_okx_order_payment_timeout,
+)
 
 MAX_FETCH_ORDER_COUNT = 200
 _EXTRA_PAYMENT_KEYWORDS_BY_CATEGORY = {
@@ -1130,7 +1133,7 @@ def get_okx_order_metrics(order: dict) -> dict:
 
     return {
         "minutes": resolve_order_minutes(
-            parse_int(order.get("paymentTimeoutMinutes")),
+            parse_int(get_okx_order_payment_timeout(order)),
             parse_description_payment_minutes(description),
         ),
         "trades": parse_int(order.get("completedOrderQuantity")),

@@ -49,6 +49,11 @@ OKX_DESCRIPTION_FIELDS = (
     "memo",
 )
 
+OKX_PAYMENT_TIMEOUT_FIELDS = (
+    "paymentTimeoutMinutes",
+    "unpaidOrderTimeoutMinutes",
+)
+
 
 def get_okx_order_id(order: dict) -> str | None:
     for field in OKX_ORDER_ID_FIELDS:
@@ -99,6 +104,20 @@ def get_okx_order_description_values(order: dict) -> tuple:
     ]
 
     return tuple(unique_values(values))
+
+
+def get_okx_order_payment_timeout(order: dict):
+    detail = get_okx_order_detail(order)
+    raw_detail = order.get("_detail") if isinstance(order.get("_detail"), dict) else {}
+
+    values = [
+        *(detail.get(field) for field in OKX_PAYMENT_TIMEOUT_FIELDS),
+        *(iter_okx_values_by_key(raw_detail, OKX_PAYMENT_TIMEOUT_FIELDS)),
+        *(order.get(field) for field in OKX_PAYMENT_TIMEOUT_FIELDS),
+        *(iter_okx_values_by_key(order, OKX_PAYMENT_TIMEOUT_FIELDS)),
+    ]
+
+    return next(unique_values(values), None)
 
 
 def iter_okx_values_by_key(value, fields: tuple[str, ...]):

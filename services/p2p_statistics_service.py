@@ -20,7 +20,7 @@ from db.models import (
     ScanBatch,
 )
 from repositories.payment_method_repository import PaymentMethodRepository
-from services.okx_order_payload import get_okx_order_id
+from services.okx_order_payload import get_okx_order_id, get_okx_order_payment_timeout
 from services.p2p_filters import (
     get_order_payment_names,
     parse_int,
@@ -788,7 +788,7 @@ def build_okx_offer_model(
         merchant_completion_rate=decimal_or_none(
             parse_percent(order.get("completedRate") or creator.get("completionRate"))
         ),
-        payment_time_minutes=parse_int(order.get("paymentTimeoutMinutes")),
+        payment_time_minutes=parse_int(get_okx_order_payment_timeout(order)),
         order_url=build_okx_order_url(
             order,
             raw_side.lower(),
