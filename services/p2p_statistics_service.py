@@ -44,6 +44,12 @@ STAT_PERIOD_TYPES = (
     STAT_PERIOD_MONTH,
     STAT_PERIOD_YEAR,
 )
+STAT_ROLLUP_SOURCE_PERIODS = {
+    STAT_PERIOD_DAY: STAT_PERIOD_HOUR,
+    STAT_PERIOD_WEEK: STAT_PERIOD_DAY,
+    STAT_PERIOD_MONTH: STAT_PERIOD_DAY,
+    STAT_PERIOD_YEAR: STAT_PERIOD_MONTH,
+}
 STAT_PERIOD_LABELS = {
     STAT_PERIOD_HOUR: "година",
     STAT_PERIOD_DAY: "день",
@@ -223,6 +229,45 @@ class P2PStatisticsService:
         period_started_at: datetime,
         period_ended_at: datetime,
     ):
+        if period_type == STAT_PERIOD_HOUR:
+            await self.recalculate_hour_period(
+                exchange_id=exchange_id,
+                crypto_currency_id=crypto_currency_id,
+                fiat_currency_id=fiat_currency_id,
+                side=side,
+                scope=scope,
+                filter_hash=filter_hash,
+                period_type=period_type,
+                period_started_at=period_started_at,
+                period_ended_at=period_ended_at,
+            )
+            return
+
+        await self.recalculate_rollup_period(
+            exchange_id=exchange_id,
+            crypto_currency_id=crypto_currency_id,
+            fiat_currency_id=fiat_currency_id,
+            side=side,
+            scope=scope,
+            filter_hash=filter_hash,
+            period_type=period_type,
+            period_started_at=period_started_at,
+            period_ended_at=period_ended_at,
+        )
+
+    async def recalculate_hour_period(
+        self,
+        *,
+        exchange_id: int,
+        crypto_currency_id: int,
+        fiat_currency_id: int,
+        side: str,
+        scope: str,
+        filter_hash: str,
+        period_type: str,
+        period_started_at: datetime,
+        period_ended_at: datetime,
+    ):
         result = await self.session.execute(
             select(P2POffer.price, P2POffer.scan_batch_id)
             .join(ScanBatch, ScanBatch.id == P2POffer.scan_batch_id)
@@ -242,12 +287,96 @@ class P2PStatisticsService:
         if not rows:
             return
 
-        prices = sorted(row.price for row in rows)
-        offers_count = len(prices)
-        scans_count = len({row.scan_batch_id for row in rows})
+        await self.save_period_statistic(
+            exchange_id=exchange_id,
+            crypto_currency_id=crypto_currency_id,
+            fiat_currency_id=fiat_currency_id,
+            side=side,
+            scope=scope,
+            filter_hash=filter_hash,
+            period_type=period_type,
+            period_started_at=period_started_at,
+            period_ended_at=period_ended_at,
+            prices=sorted(row.price for row in rows),
+            offers_count=len(rows),
+            scans_count=len({row.scan_batch_id for row in rows}),
+        )
+
+    async def recalculate_rollup_period(
+        self,
+        *,
+        exchange_id: int,
+        crypto_currency_id: int,
+        fiat_currency_id: int,
+        side: str,
+        scope: str,
+        filter_hash: str,
+        period_type: str,
+        period_started_at: datetime,
+        period_ended_at: datetime,
+    ):
+        source_period_type = STAT_ROLLUP_SOURCE_PERIODS.get(period_type)
+
+        if source_period_type is None:
+            return
+
+        result = await self.session.execute(
+            select(P2PPriceStatistic).where(
+                P2PPriceStatistic.exchange_id == exchange_id,
+                P2PPriceStatistic.crypto_currency_id == crypto_currency_id,
+                P2PPriceStatistic.fiat_currency_id == fiat_currency_id,
+                P2PPriceStatistic.side == side,
+                P2PPriceStatistic.scope == scope,
+                P2PPriceStatistic.filter_hash == filter_hash,
+                P2PPriceStatistic.period_type == source_period_type,
+                P2PPriceStatistic.period_started_at >= period_started_at,
+                P2PPriceStatistic.period_started_at < period_ended_at,
+            )
+        )
+        source_statistics = list(result.scalars().all())
+
+        if not source_statistics:
+            return
+
+        await self.save_period_statistic(
+            exchange_id=exchange_id,
+            crypto_currency_id=crypto_currency_id,
+            fiat_currency_id=fiat_currency_id,
+            side=side,
+            scope=scope,
+            filter_hash=filter_hash,
+            period_type=period_type,
+            period_started_at=period_started_at,
+            period_ended_at=period_ended_at,
+            prices=sorted(
+                get_rollup_price(statistic) for statistic in source_statistics
+            ),
+            offers_count=sum(statistic.offers_count for statistic in source_statistics),
+            scans_count=sum(statistic.scans_count for statistic in source_statistics),
+        )
+
+    async def save_period_statistic(
+        self,
+        *,
+        exchange_id: int,
+        crypto_currency_id: int,
+        fiat_currency_id: int,
+        side: str,
+        scope: str,
+        filter_hash: str,
+        period_type: str,
+        period_started_at: datetime,
+        period_ended_at: datetime,
+        prices: list[Decimal],
+        offers_count: int,
+        scans_count: int,
+    ):
+        if not prices:
+            return
+
         min_price = prices[0]
         max_price = prices[-1]
-        avg_price = sum(prices, Decimal("0")) / Decimal(offers_count)
+        avg_price = sum(prices, Decimal("0")) / Decimal(len(prices))
         median_price = calculate_median(prices)
         statistic = await self.get_statistic(
             exchange_id=exchange_id,
@@ -882,6 +1011,13 @@ def calculate_median(prices: list[Decimal]) -> Decimal:
         return prices[midpoint]
 
     return (prices[midpoint - 1] + prices[midpoint]) / Decimal("2")
+
+
+def get_rollup_price(statistic: P2PPriceStatistic) -> Decimal:
+    if statistic.period_type == STAT_PERIOD_HOUR:
+        return statistic.min_price
+
+    return statistic.avg_price
 
 
 def round_price(value: Decimal) -> Decimal:
