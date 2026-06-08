@@ -59,17 +59,17 @@ def render_p2p_statistics_chart(
     )
     draw.text(
         (52, 72),
-        "Лінія показує середній курс за обраними парами",
+        get_statistics_metric_subtitle(period_type),
         fill="#4b5563",
         font=subtitle_font,
     )
 
     periods = build_chart_periods(items, periods)
-    values = [decimal_to_float(item.avg_price) for item in items]
+    values = [decimal_to_float(get_statistics_metric_value(item, period_type)) for item in items]
     y_min, y_max = get_y_bounds(values)
 
     draw_grid(draw, label_font, periods, y_min, y_max, period_type, timezone_name)
-    draw_series(draw, items, periods, y_min, y_max, small_font)
+    draw_series(draw, items, periods, y_min, y_max, small_font, period_type)
     draw_legend(draw, small_font, group_statistics(items))
 
     draw.text(
@@ -108,7 +108,7 @@ def build_p2p_statistics_caption(
 
     return (
         f"📊 Статистика P2P · {period_label}\n"
-        f"Показник: середній курс. Серій: {series_count}. Точок: {len(items)}.\n"
+        f"Показник: {get_statistics_metric_label(period_type)}. Серій: {series_count}. Точок: {len(items)}.\n"
         f"Пари: {pairs}"
     )
 
@@ -246,14 +246,14 @@ def draw_grid(
         )
 
 
-def draw_series(draw, items, periods, y_min: float, y_max: float, label_font):
+def draw_series(draw, items, periods, y_min: float, y_max: float, label_font, period_type: str):
     grouped = group_statistics(items)
 
     for index, (_, series_items) in enumerate(grouped.items()):
         color = CHART_COLORS[index % len(CHART_COLORS)]
         point_items = sorted(series_items, key=lambda item: item.period_started_at)
         points = [
-            build_chart_point(item, periods, y_min, y_max)
+            build_chart_point(item, periods, y_min, y_max, period_type)
             for item in point_items
         ]
 
@@ -269,13 +269,14 @@ def draw_series(draw, items, periods, y_min: float, y_max: float, label_font):
             draw_point_value_label(draw, point["label"], x, y, label_font, color)
 
 
-def build_chart_point(item, periods, y_min: float, y_max: float) -> dict:
-    avg_price = decimal_to_float(item.avg_price)
+def build_chart_point(item, periods, y_min: float, y_max: float, period_type: str) -> dict:
+    value = get_statistics_metric_value(item, period_type)
+    numeric_value = decimal_to_float(value)
 
     return {
         "x": x_for_period(item.period_started_at, periods),
-        "y": y_for_value(avg_price, y_min, y_max),
-        "label": format_decimal_price(item.avg_price),
+        "y": y_for_value(numeric_value, y_min, y_max),
+        "label": format_decimal_price(value),
     }
 
 
@@ -420,6 +421,30 @@ def format_price(value: float) -> str:
 
 def format_decimal_price(value: Decimal) -> str:
     return f"{float(value):.2f}"
+
+
+def get_statistics_metric_value(
+    item: P2PPriceStatisticView,
+    period_type: str,
+) -> Decimal:
+    if period_type == STAT_PERIOD_HOUR:
+        return item.min_price
+
+    return item.avg_price
+
+
+def get_statistics_metric_label(period_type: str) -> str:
+    if period_type == STAT_PERIOD_HOUR:
+        return "найнижча ціна"
+
+    return "середній курс"
+
+
+def get_statistics_metric_subtitle(period_type: str) -> str:
+    if period_type == STAT_PERIOD_HOUR:
+        return "Лінія показує найнижчу ціну за обраними парами"
+
+    return "Лінія показує середній курс за обраними парами"
 
 
 def decimal_to_float(value: Decimal) -> float:
