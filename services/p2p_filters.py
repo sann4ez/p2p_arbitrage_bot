@@ -435,6 +435,25 @@ MONOBANK_JAR_PATTERNS = (
     ),
 )
 
+ADVERTISING_DESCRIPTION_KEYWORDS = (
+    "реклама",
+    "це реклама",
+    "это реклама",
+    "ордер не открывать",
+    "ордер не відкривати",
+    "не открывать ордер",
+    "не відкривати ордер",
+    "do not open order",
+    "don't open order",
+    "advertisement",
+)
+
+ADVERTISING_DESCRIPTION_PATTERNS = (
+    re.compile(r"(?:набор|набір|recruit|join).{0,80}(?:команд|team)", re.IGNORECASE),
+    re.compile(r"(?:доход|дохід|прибыл|прибут|profit|earn).{0,80}(?:без\s+карт|без\s+карты|%|percent|процент)", re.IGNORECASE),
+    re.compile(r"(?:для\s+связи|для\s+зв['’]?язку|contact).{0,40}(?:tg|telegram|@)", re.IGNORECASE),
+)
+
 DESCRIPTION_PAYMENT_TIME_PATTERNS = (
     re.compile(
         r"(?:оплат\w*|поступлен\w*|зачислен\w*|закрыт\w*|закрит\w*|"
@@ -1124,6 +1143,7 @@ def get_binance_order_metrics(order: dict) -> dict:
         "third_party_payments": has_third_party_payment_terms(description),
         "split_payments": has_split_payment_terms(description),
         "monobank_jar_payments": has_monobank_jar_terms(description),
+        "advertising": has_advertising_terms(description),
     }
 
 
@@ -1144,6 +1164,7 @@ def get_okx_order_metrics(order: dict) -> dict:
         "third_party_payments": has_third_party_payment_terms(description),
         "split_payments": has_split_payment_terms(description),
         "monobank_jar_payments": has_monobank_jar_terms(description),
+        "advertising": has_advertising_terms(description),
     }
 
 
@@ -1186,6 +1207,9 @@ def get_order_rejection_reason(
     apply_description_filters: bool = True,
     apply_payment_filters: bool = True,
 ) -> str | None:
+    if metrics.get("advertising"):
+        return "advertising"
+
     if settings.max_order_minutes is not None and not value_lte(
         metrics["minutes"],
         settings.max_order_minutes,
@@ -1428,6 +1452,17 @@ def has_monobank_jar_terms(description: str | None) -> bool:
         return False
 
     return any(pattern.search(text) for pattern in MONOBANK_JAR_PATTERNS)
+
+
+def has_advertising_terms(description: str | None) -> bool:
+    text = normalize_search_text(description)
+
+    if not text:
+        return False
+
+    return contains_any(text, ADVERTISING_DESCRIPTION_KEYWORDS) or any(
+        pattern.search(text) for pattern in ADVERTISING_DESCRIPTION_PATTERNS
+    )
 
 
 def parse_description_payment_minutes(description: str | None) -> int | None:

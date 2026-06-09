@@ -23,6 +23,11 @@ MAX_DESCRIPTION_FILTER_BATCH_SIZE = 50
 
 
 def needs_description_filtering(settings: P2PFilterSettings) -> bool:
+    # Advertising/spam descriptions are hard-blocked, so every scan needs a light description pass.
+    return True
+
+
+def needs_configurable_description_filtering(settings: P2PFilterSettings) -> bool:
     return (
         not settings.allow_third_party_payments
         or not settings.allow_split_payments
@@ -51,13 +56,35 @@ async def filter_orders_by_description(
         allow_missing_descriptions,
     )
 
-    if not needs_description_filtering(settings):
+    if not needs_configurable_description_filtering(settings):
+        filtered_orders = [
+            order
+            for order in filter_orders(
+                orders,
+                exchange,
+                settings,
+                apply_description_filters=False,
+            )
+            if not should_block_missing_description(
+                order,
+                exchange,
+                allow_missing_descriptions=allow_missing_descriptions,
+            )
+        ]
         logger.info(
-            "P2P description filter skipped: exchange=%s reason=no_description_filters_enabled orders=%s",
+            "P2P description filter hard-only result: exchange=%s input=%s output=%s blocked=%s reasons=%s",
             exchange,
             len(orders),
+            len(filtered_orders),
+            len(orders) - len(filtered_orders),
+            summarize_filter_rejections(
+                orders,
+                exchange,
+                settings,
+                apply_description_filters=False,
+            ),
         )
-        return orders
+        return filtered_orders
 
     if mode not in (DESCRIPTION_CHECK_GPT, DESCRIPTION_CHECK_REGEX_GPT):
         filtered_orders = [
@@ -349,6 +376,9 @@ def order_matches_regex_description(
         if exchange == "binance"
         else get_okx_order_metrics(order)
     )
+
+    if metrics.get("advertising"):
+        return False
 
     if not settings.allow_third_party_payments and metrics["third_party_payments"]:
         return False
