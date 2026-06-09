@@ -27,6 +27,7 @@ from services.p2p_filters import (
     parse_percent,
     payment_name_matches_method,
 )
+from services.p2p_exchange_drivers import get_p2p_exchange_driver
 from services.p2p_order_formatter import build_binance_order_url, build_okx_order_url
 
 
@@ -119,6 +120,7 @@ class P2PStatisticsService:
                 period_type,
             )
             await self.recalculate_period(
+                exchange_code=exchange.code,
                 exchange_id=exchange.id,
                 crypto_currency_id=crypto.id,
                 fiat_currency_id=fiat.id,
@@ -219,6 +221,7 @@ class P2PStatisticsService:
     async def recalculate_period(
         self,
         *,
+        exchange_code: str,
         exchange_id: int,
         crypto_currency_id: int,
         fiat_currency_id: int,
@@ -244,6 +247,7 @@ class P2PStatisticsService:
             return
 
         await self.recalculate_rollup_period(
+            exchange_code=exchange_code,
             exchange_id=exchange_id,
             crypto_currency_id=crypto_currency_id,
             fiat_currency_id=fiat_currency_id,
@@ -305,6 +309,7 @@ class P2PStatisticsService:
     async def recalculate_rollup_period(
         self,
         *,
+        exchange_code: str,
         exchange_id: int,
         crypto_currency_id: int,
         fiat_currency_id: int,
@@ -349,7 +354,8 @@ class P2PStatisticsService:
             period_started_at=period_started_at,
             period_ended_at=period_ended_at,
             prices=sorted(
-                get_rollup_price(statistic) for statistic in source_statistics
+                get_rollup_price(statistic, exchange_code)
+                for statistic in source_statistics
             ),
             offers_count=sum(statistic.offers_count for statistic in source_statistics),
             scans_count=sum(statistic.scans_count for statistic in source_statistics),
@@ -1013,11 +1019,36 @@ def calculate_median(prices: list[Decimal]) -> Decimal:
     return (prices[midpoint - 1] + prices[midpoint]) / Decimal("2")
 
 
-def get_rollup_price(statistic: P2PPriceStatistic) -> Decimal:
+def get_rollup_price(statistic: P2PPriceStatistic, exchange_code: str) -> Decimal:
     if statistic.period_type == STAT_PERIOD_HOUR:
-        return statistic.min_price
+        return get_directional_extreme_price(statistic, exchange_code)
 
     return statistic.avg_price
+
+
+def get_directional_extreme_price(
+    statistic,
+    exchange_code: str | None = None,
+) -> Decimal:
+    exchange = exchange_code or getattr(statistic, "exchange_code", None)
+
+    if is_crypto_to_fiat_side(exchange, statistic.side):
+        return statistic.max_price
+
+    return statistic.min_price
+
+
+def is_crypto_to_fiat_side(exchange_code: str | None, side: str) -> bool:
+    if exchange_code:
+        try:
+            driver = get_p2p_exchange_driver(exchange_code)
+        except ValueError:
+            driver = None
+
+        if driver is not None:
+            return normalize_side(side) == normalize_side(driver.crypto_to_fiat_side)
+
+    return normalize_side(side) == "SELL"
 
 
 def round_price(value: Decimal) -> Decimal:

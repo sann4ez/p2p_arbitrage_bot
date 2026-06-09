@@ -12,6 +12,7 @@ from services.p2p_statistics_service import (
     STAT_PERIOD_MONTH,
     STAT_PERIOD_WEEK,
     STAT_PERIOD_YEAR,
+    get_directional_extreme_price,
 )
 from services.time_utils import display_datetime
 
@@ -428,23 +429,23 @@ def get_statistics_metric_value(
     period_type: str,
 ) -> Decimal:
     if period_type == STAT_PERIOD_HOUR:
-        return item.min_price
+        return get_directional_extreme_price(item)
 
     return item.avg_price
 
 
 def get_statistics_metric_label(period_type: str) -> str:
     if period_type == STAT_PERIOD_HOUR:
-        return "найнижча ціна"
+        return "найкраща ціна"
 
     return "середній курс"
 
 
 def get_statistics_metric_subtitle(period_type: str) -> str:
     if period_type == STAT_PERIOD_HOUR:
-        return "Лінія показує найнижчу ціну за обраними парами"
+        return "Лінія показує мінімум для Фіат → Крипта і максимум для Крипта → Фіат"
 
-    return "Лінія показує середній курс за обраними парами"
+    return "Лінія показує середній курс з нижчих точок статистики"
 
 
 def decimal_to_float(value: Decimal) -> float:
