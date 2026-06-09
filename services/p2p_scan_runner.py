@@ -2,6 +2,7 @@ import logging
 
 from services.p2p_description_filter import (
     filter_orders_by_description_until,
+    needs_configurable_description_filtering,
     needs_description_filtering,
 )
 from services.p2p_exchange_drivers import (
@@ -85,7 +86,7 @@ async def apply_common_filters(
         )
         return []
 
-    apply_payment_filters = not needs_description_filtering(settings)
+    apply_payment_filters = not needs_configurable_description_filtering(settings)
     filtered = filter_orders(
         orders,
         driver.exchange,
