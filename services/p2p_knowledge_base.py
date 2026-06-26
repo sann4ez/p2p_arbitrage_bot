@@ -354,7 +354,7 @@ async def request_openai_answer(
         logger.exception("P2P knowledge OpenAI request failed")
         return None
 
-    logger.info(
+    logger.debug(
         "P2P knowledge OpenAI request done: chunks=%s elapsed=%.2fs",
         len(chunks),
         time.monotonic() - started_at,

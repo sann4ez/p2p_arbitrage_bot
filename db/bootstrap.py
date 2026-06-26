@@ -15,10 +15,10 @@ logger = logging.getLogger(__name__)
 
 async def bootstrap_database():
     if not Config.DB_AUTO_CREATE_TABLES:
-        logger.info("Database bootstrap skipped: DB_AUTO_CREATE_TABLES=false")
+        logger.debug("Database bootstrap skipped: DB_AUTO_CREATE_TABLES=false")
         return
 
-    logger.info("Database bootstrap start")
+    logger.debug("Database bootstrap start")
 
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
@@ -33,4 +33,4 @@ async def bootstrap_database():
     async with AsyncSessionLocal() as session:
         await PaymentMethodService(session).sync_filter_keywords()
 
-    logger.info("Database bootstrap done")
+    logger.debug("Database bootstrap done")

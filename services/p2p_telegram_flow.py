@@ -53,7 +53,7 @@ async def send_p2p_ads(
         )
 
     fetch_rows = get_fetch_order_count(settings)
-    logger.info(
+    logger.debug(
         "P2P flow start: telegram_id=%s exchange=%s side=%s pair=%s fetch_rows=%s display_count=%s desc_mode=%s payment_categories=%s selected_banks=%s max_minutes=%s min_trades=%s min_rating=%s min_completion=%s allow_split=%s allow_third_party=%s allow_monobank_jar=%s",
         message.from_user.id,
         driver.exchange,
@@ -105,7 +105,7 @@ async def send_p2p_ads(
     order_urls = driver.build_order_urls(orders, side, pair)
 
     if not blocks:
-        logger.info(
+        logger.debug(
             "P2P flow stopped: reason=no_output_orders exchange=%s side=%s pair=%s",
             driver.exchange,
             side,
@@ -120,7 +120,7 @@ async def send_p2p_ads(
         )
         return
 
-    logger.info(
+    logger.debug(
         "P2P flow sending paginated message: exchange=%s blocks=%s",
         driver.exchange,
         len(blocks),

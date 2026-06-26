@@ -47,7 +47,7 @@ async def run_global_statistics_scan_once() -> int:
         interval_seconds = settings_model.interval_seconds or DEFAULT_SCAN_INTERVAL_SECONDS
 
         if not settings_model.is_enabled:
-            logger.info("Global P2P statistics scan skipped: disabled")
+            logger.debug("Global P2P statistics scan skipped: disabled")
             return interval_seconds
 
         crypto_currencies = await service.list_crypto_currencies()
@@ -60,13 +60,13 @@ async def run_global_statistics_scan_once() -> int:
         }
 
     if not crypto_currencies or not fiat_currencies:
-        logger.info("Global P2P statistics scan skipped: no currencies")
+        logger.debug("Global P2P statistics scan skipped: no currencies")
         return interval_seconds
 
     fetch_rows = get_fetch_order_count(filter_settings)
     scan_count = 0
     saved_count = 0
-    logger.info(
+    logger.debug(
         "Global P2P statistics scan start: exchanges=%s crypto=%s fiat=%s fetch_rows=%s",
         exchange_codes,
         len(crypto_currencies),
@@ -117,7 +117,7 @@ async def run_global_statistics_scan_once() -> int:
                         filter_hash=filter_hash,
                     )
 
-    logger.info(
+    logger.debug(
         "Global P2P statistics scan done: scans=%s saved_orders=%s next_interval=%ss",
         scan_count,
         saved_count,

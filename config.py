@@ -39,7 +39,7 @@ def parse_bool(value: str | None, default: bool = False) -> bool:
 
 
 class Config:
-    LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
+    LOG_LEVEL = os.getenv("LOG_LEVEL", "WARNING").upper()
     DISPLAY_TIMEZONE = os.getenv("DISPLAY_TIMEZONE", "Europe/Kiev")
     DISPLAY_UTC_OFFSET = os.getenv("DISPLAY_UTC_OFFSET", "+03:00")
     P2P_LOG_DESCRIPTION_SNIPPETS = parse_bool(os.getenv("P2P_LOG_DESCRIPTION_SNIPPETS"))

@@ -46,7 +46,7 @@ async def fetch_filtered_p2p_orders(
         pair_key=pair.label,
         fetcher=lambda: driver.fetch_orders(side, pair, fetch_rows),
     )
-    logger.info(
+    logger.debug(
         "P2P scan fetched: exchange=%s pair=%s side=%s rows=%s",
         driver.exchange,
         pair.label,
@@ -78,7 +78,7 @@ async def apply_common_filters(
     ensure_details: bool = False,
 ) -> list[dict]:
     if not orders:
-        logger.info(
+        logger.debug(
             "P2P scan no orders: exchange=%s pair=%s side=%s",
             driver.exchange,
             pair.label,
@@ -94,7 +94,7 @@ async def apply_common_filters(
         apply_description_filters=False,
         apply_payment_filters=apply_payment_filters,
     )
-    logger.info(
+    logger.debug(
         "P2P scan base filters: exchange=%s pair=%s side=%s input=%s output=%s reasons=%s",
         driver.exchange,
         pair.label,
@@ -120,7 +120,7 @@ async def apply_common_filters(
             driver.exchange,
             payment_methods,
         )
-        logger.info(
+        logger.debug(
             "P2P scan payment filters: exchange=%s pair=%s side=%s selected=%s input=%s output=%s reasons=%s",
             driver.exchange,
             pair.label,
@@ -135,7 +135,7 @@ async def apply_common_filters(
             ),
         )
     else:
-        logger.info(
+        logger.debug(
             "P2P scan payment filters skipped: exchange=%s pair=%s side=%s reason=no_selected_banks",
             driver.exchange,
             pair.label,
@@ -166,7 +166,7 @@ async def apply_common_filters(
     if ensure_details:
         await attach_missing_order_details(driver, selected, side=side, pair=pair)
 
-    logger.info(
+    logger.debug(
         "P2P scan selected: exchange=%s pair=%s side=%s requested=%s selected=%s descriptions=%s",
         driver.exchange,
         pair.label,
@@ -198,7 +198,7 @@ async def attach_order_details(
         fetcher=lambda item_ids: driver.fetch_details(item_ids, side, pair),
     )
     driver.attach_details(orders, details)
-    logger.info(
+    logger.debug(
         "P2P scan descriptions: exchange=%s pair=%s side=%s candidates=%s details=%s descriptions=%s",
         driver.exchange,
         pair.label,

@@ -65,7 +65,7 @@ def create_pagination_session(
         expires_at=time.monotonic() + ttl_seconds,
     )
 
-    logger.info(
+    logger.debug(
         "P2P pagination session created: session=%s owner=%s pages=%s orders=%s page_size=%s ttl=%ss",
         session_id,
         owner_telegram_id,
@@ -377,7 +377,7 @@ def prune_pagination_sessions():
     for session_id in session_ids_by_expiration[:overflow]:
         _pagination_sessions.pop(session_id, None)
 
-    logger.info(
+    logger.debug(
         "P2P pagination sessions pruned: removed=%s remaining=%s max_sessions=%s",
         overflow,
         len(_pagination_sessions),

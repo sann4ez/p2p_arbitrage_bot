@@ -81,7 +81,7 @@ async def get_cached_p2p_orders(
         on_fresh=on_fresh,
     )
 
-    logger.info(
+    logger.debug(
         "P2P orders cache result: exchange=%s direction=%s pair=%s requested=%s returned=%s",
         exchange,
         direction,
@@ -120,7 +120,7 @@ async def get_cached_p2p_details(
                 missing_item_ids.append(item_id)
 
     if not missing_item_ids:
-        logger.info(
+        logger.debug(
             "P2P detail cache hit: exchange=%s items=%s",
             exchange,
             len(unique_item_ids),
@@ -141,7 +141,7 @@ async def get_cached_p2p_details(
     fetched_count = len(fresh_details)
     empty_count = len(missing_item_ids) - fetched_count
 
-    logger.info(
+    logger.debug(
         "P2P detail cache result: exchange=%s requested=%s cached=%s fetched=%s empty=%s",
         exchange,
         len(unique_item_ids),
@@ -182,7 +182,7 @@ async def get_or_fetch_cache(
     cached_value = await get_cached_value(cache_key)
 
     if cached_value is not None:
-        logger.info("P2P cache hit: key=%s", cache_key)
+        logger.debug("P2P cache hit: key=%s", cache_key)
         return cached_value
 
     lock = await get_cache_lock(cache_key)
@@ -191,10 +191,10 @@ async def get_or_fetch_cache(
         cached_value = await get_cached_value(cache_key)
 
         if cached_value is not None:
-            logger.info("P2P cache hit after lock: key=%s", cache_key)
+            logger.debug("P2P cache hit after lock: key=%s", cache_key)
             return cached_value
 
-        logger.info(
+        logger.debug(
             "P2P cache miss: key=%s ttl=%ss",
             cache_key,
             ttl_seconds,
@@ -240,7 +240,7 @@ async def set_cached_value(cache_key: str, value, ttl_seconds: float):
         cleanup_cache_state_locked()
         prune_cache_size_locked()
 
-    logger.info("P2P cache stored: key=%s ttl=%ss", cache_key, ttl_seconds)
+    logger.debug("P2P cache stored: key=%s ttl=%ss", cache_key, ttl_seconds)
 
 
 async def get_cache_lock(cache_key: str) -> asyncio.Lock:
@@ -347,7 +347,7 @@ def prune_cache_size_locked():
     for cache_key in keys_by_expiration[:overflow]:
         _cache.pop(cache_key, None)
 
-    logger.info(
+    logger.debug(
         "P2P cache pruned: removed=%s remaining=%s max_entries=%s",
         overflow,
         len(_cache),
