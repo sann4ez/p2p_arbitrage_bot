@@ -1,5 +1,6 @@
 import asyncio
 import copy
+import hashlib
 import json
 import logging
 import time
@@ -475,6 +476,7 @@ def split_cached_classifications(
     missing_items = []
     cached_failures_count = 0
     now = time.monotonic()
+    cleanup_classification_cache(now)
 
     for item in items:
         description = item["description"]
@@ -531,6 +533,8 @@ def cache_classifications(
         )
         stored += 1
 
+    prune_classification_cache()
+
     logger.info(
         "OpenAI P2P classifier cache stored: items=%s ttl=%ss",
         stored,
@@ -568,6 +572,8 @@ def cache_classification_failures(
         )
         stored += 1
 
+    prune_classification_cache()
+
     if stored:
         logger.info(
             "OpenAI P2P classifier failure cache stored: items=%s ttl=%ss",
@@ -602,7 +608,45 @@ def normalize_description(description: str | None) -> str:
 
 
 def build_classification_cache_key(description: str) -> str:
-    return f"{P2P_CLASSIFIER_PROMPT_VERSION}:{description}"
+    digest = hashlib.sha256(description.encode("utf-8")).hexdigest()
+    return f"{P2P_CLASSIFIER_PROMPT_VERSION}:{digest}"
+
+
+def cleanup_classification_cache(now: float | None = None):
+    now = now or time.monotonic()
+    expired_keys = [
+        cache_key
+        for cache_key, entry in _classification_cache.items()
+        if entry.expires_at <= now
+    ]
+
+    for cache_key in expired_keys:
+        _classification_cache.pop(cache_key, None)
+
+    prune_classification_cache()
+
+
+def prune_classification_cache():
+    max_entries = get_classifier_cache_max_entries()
+
+    if max_entries <= 0 or len(_classification_cache) <= max_entries:
+        return
+
+    overflow = len(_classification_cache) - max_entries
+    keys_by_expiration = sorted(
+        _classification_cache,
+        key=lambda cache_key: _classification_cache[cache_key].expires_at,
+    )
+
+    for cache_key in keys_by_expiration[:overflow]:
+        _classification_cache.pop(cache_key, None)
+
+    logger.info(
+        "OpenAI P2P classifier cache pruned: removed=%s remaining=%s max_entries=%s",
+        overflow,
+        len(_classification_cache),
+        max_entries,
+    )
 
 
 def get_classifier_failure_cache_ttl_seconds() -> float:
@@ -616,6 +660,16 @@ def get_classifier_failure_cache_ttl_seconds() -> float:
             )
         ),
     )
+
+
+def get_classifier_cache_max_entries() -> int:
+    try:
+        return max(
+            0,
+            int(getattr(Config, "OPENAI_P2P_CLASSIFICATION_CACHE_MAX_ENTRIES", 1000)),
+        )
+    except (TypeError, ValueError):
+        return 1000
 
 
 def parse_confidence(value) -> float:

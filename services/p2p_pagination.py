@@ -359,6 +359,31 @@ def cleanup_expired_sessions():
     for session_id in expired_session_ids:
         _pagination_sessions.pop(session_id, None)
 
+    prune_pagination_sessions()
+
+
+def prune_pagination_sessions():
+    max_sessions = get_pagination_max_sessions()
+
+    if max_sessions <= 0 or len(_pagination_sessions) <= max_sessions:
+        return
+
+    overflow = len(_pagination_sessions) - max_sessions
+    session_ids_by_expiration = sorted(
+        _pagination_sessions,
+        key=lambda session_id: _pagination_sessions[session_id].expires_at,
+    )
+
+    for session_id in session_ids_by_expiration[:overflow]:
+        _pagination_sessions.pop(session_id, None)
+
+    logger.info(
+        "P2P pagination sessions pruned: removed=%s remaining=%s max_sessions=%s",
+        overflow,
+        len(_pagination_sessions),
+        max_sessions,
+    )
+
 
 def clamp_page_index(page_index: int, total_pages: int) -> int:
     if total_pages <= 1:
@@ -379,3 +404,10 @@ def get_pagination_ttl_seconds() -> float:
         return max(0.0, float(getattr(Config, "P2P_PAGINATION_TTL_SECONDS", 600)))
     except (TypeError, ValueError):
         return 600
+
+
+def get_pagination_max_sessions() -> int:
+    try:
+        return max(0, int(getattr(Config, "P2P_PAGINATION_MAX_SESSIONS", 200)))
+    except (TypeError, ValueError):
+        return 200

@@ -60,6 +60,9 @@ class Config:
     OPENAI_P2P_CLASSIFICATION_CACHE_TTL_SECONDS = float(
         os.getenv("OPENAI_P2P_CLASSIFICATION_CACHE_TTL_SECONDS", "600")
     )
+    OPENAI_P2P_CLASSIFICATION_CACHE_MAX_ENTRIES = int(
+        os.getenv("OPENAI_P2P_CLASSIFICATION_CACHE_MAX_ENTRIES", "1000")
+    )
     OPENAI_P2P_CLASSIFICATION_FAILURE_CACHE_TTL_SECONDS = float(
         os.getenv("OPENAI_P2P_CLASSIFICATION_FAILURE_CACHE_TTL_SECONDS", "0")
     )
@@ -71,8 +74,13 @@ class Config:
     P2P_GLOBAL_COOLDOWN_SECONDS = float(os.getenv("P2P_GLOBAL_COOLDOWN_SECONDS", "2"))
     P2P_CACHE_TTL_SECONDS = float(os.getenv("P2P_CACHE_TTL_SECONDS", "30"))
     P2P_DETAILS_CACHE_TTL_SECONDS = float(os.getenv("P2P_DETAILS_CACHE_TTL_SECONDS", "90"))
+    P2P_CACHE_MAX_ENTRIES = int(os.getenv("P2P_CACHE_MAX_ENTRIES", "1000"))
+    P2P_CACHE_CLEANUP_INTERVAL_SECONDS = float(
+        os.getenv("P2P_CACHE_CLEANUP_INTERVAL_SECONDS", "60")
+    )
     P2P_ORDERS_PER_PAGE = int(os.getenv("P2P_ORDERS_PER_PAGE", "3"))
     P2P_PAGINATION_TTL_SECONDS = float(os.getenv("P2P_PAGINATION_TTL_SECONDS", "600"))
+    P2P_PAGINATION_MAX_SESSIONS = int(os.getenv("P2P_PAGINATION_MAX_SESSIONS", "200"))
     ADMIN_ALERTS_ENABLED = parse_bool(os.getenv("ADMIN_ALERTS_ENABLED"), True)
     ADMIN_ALERT_COOLDOWN_SECONDS = float(
         os.getenv("ADMIN_ALERT_COOLDOWN_SECONDS", "900")
@@ -85,6 +93,9 @@ class Config:
         True,
     )
     SUPER_ADMIN_TELEGRAM_IDS = parse_telegram_ids(os.getenv("SUPER_ADMIN_TELEGRAM_IDS"))
+    P2P_KNOWLEDGE_BASE_TELEGRAM_IDS = parse_telegram_ids(
+        os.getenv("P2P_KNOWLEDGE_BASE_TELEGRAM_IDS")
+    )
     SPREAD_THRESHOLD = 1.5  # мінімальний спред у %
     POLL_INTERVAL = 15      # секунд між опитуванням бірж
 

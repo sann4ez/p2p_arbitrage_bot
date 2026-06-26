@@ -1,4 +1,5 @@
 from db.base import AsyncSessionLocal
+from config import Config
 from db.dto import (
     PERMISSION_MANAGE_CURRENCIES,
     PERMISSION_MANAGE_PAYMENT_METHODS,
@@ -17,7 +18,17 @@ async def root_menu_for_user(telegram_id: int):
             PERMISSION_VIEW_ADMIN_PANEL,
         )
 
-    return root_menu_kb(can_view_admin=can_view_admin)
+    return root_menu_kb(
+        can_view_admin=can_view_admin,
+        can_use_knowledge_base=can_use_knowledge_base(telegram_id),
+    )
+
+
+def can_use_knowledge_base(telegram_id: int | None) -> bool:
+    return bool(
+        telegram_id
+        and telegram_id in Config.P2P_KNOWLEDGE_BASE_TELEGRAM_IDS
+    )
 
 
 async def admin_menu_for_user(telegram_id: int):

@@ -25,6 +25,7 @@ OKX_ICON_CUSTOM_EMOJI_ID = os.getenv("OKX_ICON_CUSTOM_EMOJI_ID")
 BTN_BINANCE = "Binance" if BINANCE_ICON_CUSTOM_EMOJI_ID else "🟡 Binance"
 BTN_OKX = "OKX" if OKX_ICON_CUSTOM_EMOJI_ID else "⚫ OKX"
 BTN_P2P = "💱 P2P"
+BTN_KNOWLEDGE_BASE = "🧠 P2P база знань"
 BTN_STATISTICS = "📊 Статистика"
 BTN_CABINET = "👤 Особистий кабінет"
 BTN_ADMIN_PANEL = "🛠 Адмін панель"
@@ -125,7 +126,10 @@ def keyboard_button(text: str, icon_custom_emoji_id: str | None = None):
     return KeyboardButton(**kwargs)
 
 
-def root_menu_kb(can_view_admin: bool = False):
+def root_menu_kb(
+    can_view_admin: bool = False,
+    can_use_knowledge_base: bool = False,
+):
     keyboard = [
         [
             KeyboardButton(text=BTN_P2P),
@@ -135,6 +139,9 @@ def root_menu_kb(can_view_admin: bool = False):
             KeyboardButton(text=BTN_STATISTICS),
         ],
     ]
+
+    if can_use_knowledge_base:
+        keyboard.append([KeyboardButton(text=BTN_KNOWLEDGE_BASE)])
 
     if can_view_admin:
         keyboard.append([KeyboardButton(text=BTN_ADMIN_PANEL)])
@@ -174,6 +181,17 @@ def cabinet_kb():
             [
                 KeyboardButton(text=BTN_SHARE_LOCATION, request_location=True),
             ],
+            [
+                KeyboardButton(text=BTN_BACK),
+            ],
+        ],
+        resize_keyboard=True,
+    )
+
+
+def knowledge_base_kb():
+    return ReplyKeyboardMarkup(
+        keyboard=[
             [
                 KeyboardButton(text=BTN_BACK),
             ],

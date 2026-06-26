@@ -1,4 +1,5 @@
 import json
+import re
 from datetime import date, datetime, timedelta
 from html import escape
 
@@ -32,6 +33,7 @@ from keyboards.menu import (
     BTN_FILTER_PERSON_PREFIX,
     BTN_FILTER_SPLIT_PAYMENTS_PREFIX,
     BTN_FILTER_THIRD_PARTY_PREFIX,
+    BTN_KNOWLEDGE_BASE,
     BTN_MY_INFO,
     BTN_P2P,
     BTN_P2P_FILTERS,
@@ -72,6 +74,7 @@ from keyboards.menu import (
     FILTER_SCREEN_THIRD_PARTY,
     cabinet_kb,
     exchanges_kb,
+    knowledge_base_kb,
     p2p_filter_values_inline_kb,
     p2p_filters_inline_kb,
     p2p_pair_fiats_inline_kb,
@@ -85,7 +88,7 @@ from keyboards.menu import (
     user_payment_fiats_inline_kb,
     user_payment_methods_inline_kb,
 )
-from services.menu_service import root_menu_for_user
+from services.menu_service import can_use_knowledge_base, root_menu_for_user
 from services.payment_method_service import PaymentMethodService
 from services.p2p_pair_service import P2PPairService, format_pairs_summary
 from services.p2p_filters import (
@@ -141,6 +144,7 @@ from services.p2p_statistics_chart import (
     get_statistics_metric_value,
     render_p2p_statistics_chart,
 )
+from services.p2p_knowledge_base import answer_p2p_knowledge_question
 from services.statistics_settings_service import StatisticsSettingsService
 from services.telegram_payloads import dump_telegram_model
 from services.timezone_resolver import resolve_timezone_from_coordinates
@@ -159,6 +163,8 @@ STATISTICS_WEEKLY_YEAR_PERIODS = 54
 STATISTICS_MONTHLY_YEAR_PERIODS = 12
 STATISTICS_YEARLY_DECADE_PERIODS = 10
 TELEGRAM_PHOTO_CAPTION_LIMIT = 1024
+TELEGRAM_MESSAGE_LIMIT = 3900
+ALLOWED_KNOWLEDGE_HTML_TAGS = {"b", "i", "u", "s", "code"}
 STATISTICS_EXCHANGES = {"binance", "okx"}
 STATISTICS_DIRECTIONS = {
     P2P_DIRECTION_FIAT_TO_CRYPTO,
@@ -288,6 +294,22 @@ async def statistics_menu(message: types.Message, state: FSMContext):
     await send_statistics_pair_crypto_menu(message, state)
 
 
+@router.message(F.text == BTN_KNOWLEDGE_BASE)
+async def knowledge_base_menu(message: types.Message, state: FSMContext):
+    if not can_use_knowledge_base(message.from_user.id if message.from_user else None):
+        await message.answer("Цей розділ зараз недоступний для вашого акаунта.")
+        return
+
+    await state.set_state(AppMenu.knowledge_base)
+
+    await message.answer(
+        "<b>🧠 P2P база знань</b>\n\n"
+        "Напишіть питання по матеріалах з бази знань. "
+        "Я знайду відповідь у файлах <code>knowledge_base/*.md</code>.",
+        reply_markup=knowledge_base_kb(),
+    )
+
+
 @router.message(
     StateFilter(
         AppMenu.p2p_filters,
@@ -317,7 +339,10 @@ async def back_to_cabinet(message: types.Message, state: FSMContext):
     )
 
 
-@router.message(StateFilter(AppMenu.p2p_exchanges, AppMenu.cabinet, None), F.text == BTN_BACK)
+@router.message(
+    StateFilter(AppMenu.p2p_exchanges, AppMenu.cabinet, AppMenu.knowledge_base, None),
+    F.text == BTN_BACK,
+)
 async def back_to_main_menu(message: types.Message, state: FSMContext):
     await state.clear()
 
@@ -325,6 +350,35 @@ async def back_to_main_menu(message: types.Message, state: FSMContext):
         "Головне меню:",
         reply_markup=await root_menu_for_user(message.from_user.id),
     )
+
+
+@router.message(StateFilter(AppMenu.knowledge_base), F.text)
+async def answer_knowledge_base_question(message: types.Message):
+    if not can_use_knowledge_base(message.from_user.id if message.from_user else None):
+        await message.answer("Цей розділ зараз недоступний для вашого акаунта.")
+        return
+
+    question = (message.text or "").strip()
+
+    if len(question) < 3:
+        await message.answer(
+            "Напишіть питання трохи детальніше.",
+            reply_markup=knowledge_base_kb(),
+        )
+        return
+
+    await message.answer("Шукаю відповідь у P2P базі знань...")
+    knowledge_answer = await answer_p2p_knowledge_question(question)
+    response_text = build_knowledge_base_answer_text(knowledge_answer)
+
+    for part in split_long_message(response_text):
+        try:
+            await message.answer(part, reply_markup=knowledge_base_kb())
+        except TelegramBadRequest:
+            await message.answer(
+                strip_telegram_html(part),
+                reply_markup=knowledge_base_kb(),
+            )
 
 
 @router.message(F.text == BTN_MY_INFO)
@@ -2952,6 +3006,170 @@ def parse_optional_int(value: str) -> int | None:
 
 def parse_optional_float(value: str) -> float | None:
     return None if value == "none" else float(value)
+
+
+def build_knowledge_base_answer_text(knowledge_answer) -> str:
+    text = sanitize_telegram_html(
+        knowledge_answer.answer or "Не знайшов відповідь у базі знань."
+    )
+
+    if not knowledge_answer.sources:
+        return text
+
+    sources = ", ".join(
+        f"<code>{escape(source)}</code>"
+        for source in knowledge_answer.sources
+    )
+
+    return f"{text}\n\n<b>Джерела:</b> {sources}"
+
+
+def sanitize_telegram_html(text: str) -> str:
+    normalized = normalize_knowledge_answer_markup(str(text or "").strip())
+    placeholders: dict[str, str] = {}
+
+    def replace_tag(match: re.Match) -> str:
+        slash = "/" if match.group("slash") else ""
+        tag = match.group("tag").lower()
+
+        if tag not in ALLOWED_KNOWLEDGE_HTML_TAGS:
+            return match.group(0)
+
+        placeholder = f"@@TG_HTML_TAG_{len(placeholders)}@@"
+        placeholders[placeholder] = f"<{slash}{tag}>"
+        return placeholder
+
+    protected = re.sub(
+        r"<\s*(?P<slash>/)?\s*(?P<tag>b|i|u|s|code)\s*>",
+        replace_tag,
+        normalized,
+        flags=re.IGNORECASE,
+    )
+    escaped = escape(protected)
+
+    for placeholder, tag in placeholders.items():
+        escaped = escaped.replace(placeholder, tag)
+
+    return escaped
+
+
+def normalize_knowledge_answer_markup(text: str) -> str:
+    lines = text.splitlines()
+    normalized_lines = []
+
+    for index, line in enumerate(lines):
+        heading_match = re.match(r"^\s{0,3}#{1,6}\s*(.+?)\s*$", line)
+
+        if heading_match:
+            if normalized_lines and normalized_lines[-1]:
+                normalized_lines.append("")
+            normalized_lines.append(f"<b>{heading_match.group(1)}</b>")
+            continue
+
+        section_match = re.match(
+            r"^\s*((?:Перший|Другий|Третій|Четвертий)\s+тип\b.+?)\s*$",
+            line,
+            flags=re.IGNORECASE,
+        )
+
+        if section_match:
+            next_line = lines[index + 1] if index + 1 < len(lines) else ""
+
+            if re.match(r"^\s*[-*•]\s+", next_line):
+                if normalized_lines and normalized_lines[-1]:
+                    normalized_lines.append("")
+                normalized_lines.append(f"<b>{section_match.group(1)}</b>")
+                continue
+
+        short_section_match = re.match(r"^\s*([^<>\n]{3,60})\s*$", line)
+
+        if short_section_match:
+            next_line = lines[index + 1] if index + 1 < len(lines) else ""
+            section_title = short_section_match.group(1).strip()
+
+            if (
+                re.match(r"^\s*[-*•]\s+", next_line)
+                and not section_title.endswith((".", ";", ","))
+            ):
+                if normalized_lines and normalized_lines[-1]:
+                    normalized_lines.append("")
+                normalized_lines.append(f"<b>{section_title.rstrip(':')}:</b>")
+                continue
+
+        top_bullet_match = re.match(r"^[-*•]\s+(.+?)\s*$", line)
+
+        if top_bullet_match:
+            content = top_bullet_match.group(1)
+            next_line = lines[index + 1] if index + 1 < len(lines) else ""
+
+            if re.match(r"^\s+[-*•]\s+", next_line):
+                if normalized_lines and normalized_lines[-1]:
+                    normalized_lines.append("")
+                normalized_lines.append(f"<b>{content}</b>")
+            else:
+                normalized_lines.append(format_knowledge_bullet(content))
+
+            continue
+
+        nested_bullet_match = re.match(r"^\s+[-*•]\s+(.+?)\s*$", line)
+
+        if nested_bullet_match:
+            normalized_lines.append(format_knowledge_bullet(nested_bullet_match.group(1)))
+            continue
+
+        numbered_match = re.match(r"^\s{0,8}\d+[.)]\s+(.+?)\s*$", line)
+
+        if numbered_match:
+            normalized_lines.append(format_knowledge_bullet(numbered_match.group(1)))
+            continue
+
+        normalized_lines.append(line.rstrip())
+
+    text = "\n".join(normalized_lines)
+    text = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", text)
+    text = re.sub(r"__(.+?)__", r"<b>\1</b>", text)
+
+    return text
+
+
+def format_knowledge_bullet(content: str) -> str:
+    content = content.strip()
+    label_match = re.match(r"^([^:]{3,40}):\s*(.+)$", content)
+
+    if label_match:
+        label, value = label_match.groups()
+        return f"• <b>{label.strip()}:</b> {value.strip()}"
+
+    return f"• {content}"
+
+
+def strip_telegram_html(text: str) -> str:
+    return re.sub(r"<[^>]+>", "", str(text or ""))
+
+
+def split_long_message(text: str, limit: int = TELEGRAM_MESSAGE_LIMIT) -> list[str]:
+    if len(text) <= limit:
+        return [text]
+
+    parts = []
+    current = ""
+
+    for paragraph in text.split("\n\n"):
+        candidate = f"{current}\n\n{paragraph}".strip() if current else paragraph
+
+        if len(candidate) <= limit:
+            current = candidate
+            continue
+
+        if current:
+            parts.append(current)
+
+        current = paragraph
+
+    if current:
+        parts.append(current)
+
+    return parts
 
 
 async def send_profile_info(message: types.Message, user, roles: list[str]):
