@@ -1,5 +1,6 @@
 import asyncio
 import copy
+import hashlib
 import logging
 import math
 import time
@@ -23,11 +24,18 @@ class CacheEntry:
     expires_at: float
 
 
+@dataclass
+class CacheLockEntry:
+    lock: asyncio.Lock
+    last_used_at: float
+
+
 _user_last_requests: dict[int, float] = {}
 _global_last_requests: dict[str, float] = {}
 _cache: dict[str, CacheEntry] = {}
-_cache_locks: dict[str, asyncio.Lock] = {}
+_cache_locks: dict[str, CacheLockEntry] = {}
 _guard_lock = asyncio.Lock()
+_last_cache_cleanup_at = 0.0
 
 
 async def check_p2p_user_rate_limit(telegram_id: int) -> RateLimitResult:
@@ -73,7 +81,7 @@ async def get_cached_p2p_orders(
         on_fresh=on_fresh,
     )
 
-    logger.info(
+    logger.debug(
         "P2P orders cache result: exchange=%s direction=%s pair=%s requested=%s returned=%s",
         exchange,
         direction,
@@ -112,7 +120,7 @@ async def get_cached_p2p_details(
                 missing_item_ids.append(item_id)
 
     if not missing_item_ids:
-        logger.info(
+        logger.debug(
             "P2P detail cache hit: exchange=%s items=%s",
             exchange,
             len(unique_item_ids),
@@ -120,11 +128,12 @@ async def get_cached_p2p_details(
         return details
 
     fresh_details = await get_or_fetch_cache(
-        cache_key=f"p2p-detail-batch:{exchange}:{','.join(missing_item_ids)}",
+        cache_key=get_detail_batch_cache_key(exchange, missing_item_ids),
         exchange=exchange,
         ttl_seconds=ttl_seconds,
         fetcher=lambda: fetcher(missing_item_ids),
         cache_empty=False,
+        store_value=False,
     )
 
     now = time.monotonic()
@@ -132,7 +141,7 @@ async def get_cached_p2p_details(
     fetched_count = len(fresh_details)
     empty_count = len(missing_item_ids) - fetched_count
 
-    logger.info(
+    logger.debug(
         "P2P detail cache result: exchange=%s requested=%s cached=%s fetched=%s empty=%s",
         exchange,
         len(unique_item_ids),
@@ -167,12 +176,13 @@ async def get_or_fetch_cache(
     ttl_seconds: float,
     fetcher: Callable[[], Awaitable],
     cache_empty: bool = True,
+    store_value: bool = True,
     on_fresh: Callable[[object], Awaitable[None]] | None = None,
 ):
     cached_value = await get_cached_value(cache_key)
 
     if cached_value is not None:
-        logger.info("P2P cache hit: key=%s", cache_key)
+        logger.debug("P2P cache hit: key=%s", cache_key)
         return cached_value
 
     lock = await get_cache_lock(cache_key)
@@ -181,10 +191,10 @@ async def get_or_fetch_cache(
         cached_value = await get_cached_value(cache_key)
 
         if cached_value is not None:
-            logger.info("P2P cache hit after lock: key=%s", cache_key)
+            logger.debug("P2P cache hit after lock: key=%s", cache_key)
             return cached_value
 
-        logger.info(
+        logger.debug(
             "P2P cache miss: key=%s ttl=%ss",
             cache_key,
             ttl_seconds,
@@ -195,7 +205,7 @@ async def get_or_fetch_cache(
         if on_fresh and value:
             await on_fresh(copy.deepcopy(value))
 
-        if cache_empty or value:
+        if store_value and (cache_empty or value):
             await set_cached_value(cache_key, value, ttl_seconds)
 
         return copy.deepcopy(value)
@@ -205,6 +215,7 @@ async def get_cached_value(cache_key: str):
     now = time.monotonic()
 
     async with _guard_lock:
+        cleanup_cache_state_locked(now)
         cached = _cache.get(cache_key)
 
         if not cached:
@@ -226,19 +237,28 @@ async def set_cached_value(cache_key: str, value, ttl_seconds: float):
             value=copy.deepcopy(value),
             expires_at=time.monotonic() + ttl_seconds,
         )
+        cleanup_cache_state_locked()
+        prune_cache_size_locked()
 
-    logger.info("P2P cache stored: key=%s ttl=%ss", cache_key, ttl_seconds)
+    logger.debug("P2P cache stored: key=%s ttl=%ss", cache_key, ttl_seconds)
 
 
 async def get_cache_lock(cache_key: str) -> asyncio.Lock:
     async with _guard_lock:
-        lock = _cache_locks.get(cache_key)
+        now = time.monotonic()
+        cleanup_cache_state_locked(now)
+        lock_entry = _cache_locks.get(cache_key)
 
-        if not lock:
-            lock = asyncio.Lock()
-            _cache_locks[cache_key] = lock
+        if not lock_entry:
+            lock_entry = CacheLockEntry(
+                lock=asyncio.Lock(),
+                last_used_at=now,
+            )
+            _cache_locks[cache_key] = lock_entry
+        else:
+            lock_entry.last_used_at = now
 
-        return lock
+        return lock_entry.lock
 
 
 async def wait_for_global_cooldown(exchange: str):
@@ -283,6 +303,89 @@ def get_detail_cache_key(exchange: str, item_id: object) -> str:
     return f"p2p-detail:{exchange}:{item_id}"
 
 
+def get_detail_batch_cache_key(exchange: str, item_ids: list[str]) -> str:
+    digest = hashlib.sha256(",".join(item_ids).encode("utf-8")).hexdigest()
+    return f"p2p-detail-batch:{exchange}:{digest}"
+
+
+def cleanup_cache_state_locked(now: float | None = None):
+    global _last_cache_cleanup_at
+
+    now = now or time.monotonic()
+    cleanup_interval = get_cache_cleanup_interval_seconds()
+
+    if cleanup_interval > 0 and now - _last_cache_cleanup_at < cleanup_interval:
+        return
+
+    _last_cache_cleanup_at = now
+    expired_cache_keys = [
+        cache_key
+        for cache_key, entry in _cache.items()
+        if entry.expires_at <= now
+    ]
+
+    for cache_key in expired_cache_keys:
+        _cache.pop(cache_key, None)
+
+    prune_cache_size_locked()
+    cleanup_cache_locks_locked(now)
+    cleanup_user_rate_limit_state_locked(now)
+
+
+def prune_cache_size_locked():
+    max_entries = get_cache_max_entries()
+
+    if max_entries <= 0 or len(_cache) <= max_entries:
+        return
+
+    overflow = len(_cache) - max_entries
+    keys_by_expiration = sorted(
+        _cache,
+        key=lambda cache_key: _cache[cache_key].expires_at,
+    )
+
+    for cache_key in keys_by_expiration[:overflow]:
+        _cache.pop(cache_key, None)
+
+    logger.debug(
+        "P2P cache pruned: removed=%s remaining=%s max_entries=%s",
+        overflow,
+        len(_cache),
+        max_entries,
+    )
+
+
+def cleanup_cache_locks_locked(now: float):
+    lock_ttl = max(
+        get_orders_cache_ttl_seconds(),
+        get_details_cache_ttl_seconds(),
+        300.0,
+    )
+    expired_lock_keys = [
+        cache_key
+        for cache_key, lock_entry in _cache_locks.items()
+        if (
+            not lock_entry.lock.locked()
+            and now - lock_entry.last_used_at > lock_ttl
+        )
+    ]
+
+    for cache_key in expired_lock_keys:
+        _cache_locks.pop(cache_key, None)
+
+
+def cleanup_user_rate_limit_state_locked(now: float):
+    cooldown = max(get_user_cooldown_seconds(), 60.0)
+    expired_user_ids = [
+        telegram_id
+        for telegram_id, last_request_at in _user_last_requests.items()
+        if now - last_request_at > cooldown * 10
+    ]
+
+    for telegram_id in expired_user_ids:
+        _user_last_requests.pop(telegram_id, None)
+
+
 def format_rate_limit_message(wait_seconds: int) -> str:
     return (
         "Трохи зачекайте перед наступним P2P-запитом.\n\n"
@@ -304,3 +407,20 @@ def get_orders_cache_ttl_seconds() -> float:
 
 def get_details_cache_ttl_seconds() -> float:
     return max(0.0, float(getattr(Config, "P2P_DETAILS_CACHE_TTL_SECONDS", 90)))
+
+
+def get_cache_max_entries() -> int:
+    try:
+        return max(0, int(getattr(Config, "P2P_CACHE_MAX_ENTRIES", 1000)))
+    except (TypeError, ValueError):
+        return 1000
+
+
+def get_cache_cleanup_interval_seconds() -> float:
+    try:
+        return max(
+            0.0,
+            float(getattr(Config, "P2P_CACHE_CLEANUP_INTERVAL_SECONDS", 60)),
+        )
+    except (TypeError, ValueError):
+        return 60.0

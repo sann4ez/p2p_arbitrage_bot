@@ -29,6 +29,7 @@ OKX_HEADERS = {
         "Chrome/125.0.0.0 Safari/537.36"
     ),
 }
+_last_detail_warning_at: dict[str, float] = {}
 
 
 async def fetch_okx_p2p(
@@ -50,7 +51,7 @@ async def fetch_okx_p2p(
         "isAbleFilter": "false",
     }
     timeout = aiohttp.ClientTimeout(total=15)
-    logger.info(
+    logger.debug(
         "OKX P2P API request start: side=%s asset=%s fiat=%s rows=%s",
         side,
         asset,
@@ -107,7 +108,7 @@ async def fetch_okx_p2p(
         )
         return []
 
-    logger.info(
+    logger.debug(
         "OKX P2P API request done: side=%s asset=%s fiat=%s requested=%s returned=%s",
         side,
         asset,
@@ -231,12 +232,13 @@ async def _fetch_okx_p2p_detail(
 
                 data = await response.json(content_type=None)
         except (aiohttp.ClientError, asyncio.TimeoutError) as error:
-            logger.warning(
-                "OKX detail request failed: order_id=%s side=%s error=%s",
-                order_id,
-                side,
-                type(error).__name__,
-            )
+            if should_log_detail_warning("request_failed"):
+                logger.warning(
+                    "OKX detail request failed: order_id=%s side=%s error=%s",
+                    order_id,
+                    side,
+                    type(error).__name__,
+                )
             return order_id, {}
 
         detail = extract_okx_detail(data)
@@ -244,15 +246,13 @@ async def _fetch_okx_p2p_detail(
         if detail:
             return order_id, detail
 
-    logger.warning(
-        "OKX detail request returned empty detail: order_id=%s side=%s status=%s body=%s",
-        order_id,
-        side,
-        last_status,
-        last_body[:300],
-    )
-
     if is_okx_authorization_expired(last_status, last_body):
+        if should_log_detail_warning("authorization_expired"):
+            logger.warning(
+                "OKX detail request authorization expired: status=%s body=%s",
+                last_status,
+                last_body[:300],
+            )
         await notify_admins(
             "OKX Authorization токен протух",
             (
@@ -261,8 +261,28 @@ async def _fetch_okx_p2p_detail(
             ),
             key="okx_authorization_expired",
         )
+    else:
+        logger.debug(
+            "OKX detail request returned empty detail: order_id=%s side=%s status=%s body=%s",
+            order_id,
+            side,
+            last_status,
+            last_body[:300],
+        )
 
     return order_id, {}
+
+
+def should_log_detail_warning(key: str) -> bool:
+    now = time.monotonic()
+    cooldown = max(60.0, float(getattr(Config, "ADMIN_ALERT_COOLDOWN_SECONDS", 900)))
+    last_at = _last_detail_warning_at.get(key, 0.0)
+
+    if now - last_at < cooldown:
+        return False
+
+    _last_detail_warning_at[key] = now
+    return True
 
 
 def build_okx_detail_headers(referer: str, request_timestamp: int) -> dict[str, str]:

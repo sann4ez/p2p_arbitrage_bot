@@ -133,7 +133,7 @@ class P2PStatisticsService:
             )
 
         await self.session.commit()
-        logger.info(
+        logger.debug(
             "P2P statistics scan saved: scope=%s filter_hash=%s exchange=%s pair=%s/%s side=%s requested=%s received=%s saved=%s",
             scope,
             filter_hash,

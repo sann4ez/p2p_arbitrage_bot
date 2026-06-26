@@ -29,7 +29,7 @@ async def fetch_binance_p2p(
 ):
     timeout = aiohttp.ClientTimeout(total=15)
     orders = []
-    logger.info(
+    logger.debug(
         "Binance P2P API request start: trade_type=%s asset=%s fiat=%s rows=%s amount=%s",
         trade_type,
         asset,
@@ -89,7 +89,7 @@ async def fetch_binance_p2p(
                     )
                     break
 
-                logger.info(
+                logger.debug(
                     "Binance P2P API page result: trade_type=%s asset=%s fiat=%s page=%s page_rows=%s total_rows=%s code=%s",
                     trade_type,
                     asset,
@@ -125,7 +125,7 @@ async def fetch_binance_p2p(
         )
         return []
 
-    logger.info(
+    logger.debug(
         "Binance P2P API request done: trade_type=%s asset=%s fiat=%s requested=%s returned=%s",
         trade_type,
         asset,

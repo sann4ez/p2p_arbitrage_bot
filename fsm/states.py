@@ -14,6 +14,7 @@ class AppMenu(StatesGroup):
     payment_methods = State()
     statistics = State()
     statistics_period_input = State()
+    knowledge_base = State()
 
 
 class AdminMenu(StatesGroup):

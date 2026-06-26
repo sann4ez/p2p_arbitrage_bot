@@ -45,7 +45,7 @@ async def filter_orders_by_description(
 ) -> list[dict]:
     mode = normalize_description_check_mode(settings.description_check_mode)
 
-    logger.info(
+    logger.debug(
         "P2P description filter start: exchange=%s orders=%s mode=%s allow_split=%s allow_third_party=%s allow_monobank_jar=%s allow_missing_descriptions=%s",
         exchange,
         len(orders),
@@ -71,7 +71,7 @@ async def filter_orders_by_description(
                 allow_missing_descriptions=allow_missing_descriptions,
             )
         ]
-        logger.info(
+        logger.debug(
             "P2P description filter hard-only result: exchange=%s input=%s output=%s blocked=%s reasons=%s",
             exchange,
             len(orders),
@@ -96,7 +96,7 @@ async def filter_orders_by_description(
                 allow_missing_descriptions=allow_missing_descriptions,
             )
         ]
-        logger.info(
+        logger.debug(
             "P2P description filter regex result: exchange=%s input=%s output=%s blocked=%s reasons=%s",
             exchange,
             len(orders),
@@ -115,7 +115,7 @@ async def filter_orders_by_description(
             settings,
             apply_description_filters=False,
         )
-        logger.info(
+        logger.debug(
             "P2P description filter detail-aware base result before GPT: exchange=%s input=%s output=%s blocked=%s reasons=%s",
             exchange,
             len(orders),
@@ -134,7 +134,7 @@ async def filter_orders_by_description(
 
     if mode == DESCRIPTION_CHECK_REGEX_GPT:
         gpt_orders = filter_orders(orders, exchange, settings)
-        logger.info(
+        logger.debug(
             "P2P description filter regex prefilter result: exchange=%s input=%s output=%s blocked=%s reasons=%s",
             exchange,
             len(orders),
@@ -148,7 +148,7 @@ async def filter_orders_by_description(
 
     descriptions = [get_order_description(order, exchange) for order in gpt_orders]
     descriptions_count = sum(1 for description in descriptions if description)
-    logger.info(
+    logger.debug(
         "P2P description filter GPT input: exchange=%s orders=%s descriptions=%s empty_descriptions=%s",
         exchange,
         len(gpt_orders),
@@ -159,7 +159,7 @@ async def filter_orders_by_description(
 
     if not classifications:
         if descriptions_count > 0:
-            logger.warning(
+            logger.debug(
                 "P2P description filter GPT unavailable; fail closed: exchange=%s input=%s descriptions=%s reason=no_classifications",
                 exchange,
                 len(gpt_orders),
@@ -181,7 +181,7 @@ async def filter_orders_by_description(
                 allow_missing_descriptions=allow_missing_descriptions,
             )
         ]
-        logger.warning(
+        logger.debug(
             "P2P description filter GPT fallback to regex: exchange=%s input=%s output=%s reason=no_classifications",
             exchange,
             len(gpt_orders),
@@ -267,7 +267,7 @@ async def filter_orders_by_description(
         if blocked_reasons_count == 0:
             filtered_orders.append(order)
 
-    logger.info(
+    logger.debug(
         "P2P description filter GPT result: exchange=%s input=%s output=%s classifications=%s missing=%s missing_descriptions_blocked=%s blocked_split=%s blocked_third_party=%s blocked_monobank_jar=%s blocked_both=%s blocked_multiple_reasons=%s regex_safety_blocked=%s gpt_split_overrides=%s gpt_third_party_overrides=%s",
         exchange,
         len(gpt_orders),
@@ -306,7 +306,7 @@ async def filter_orders_by_description_until(
     selected_orders = []
     batch_size = get_description_filter_batch_size(limit)
 
-    logger.info(
+    logger.debug(
         "P2P description filter progressive start: exchange=%s input=%s limit=%s batch_size=%s allow_missing_descriptions=%s",
         exchange,
         len(orders),
@@ -326,7 +326,7 @@ async def filter_orders_by_description_until(
         )
         selected_orders.extend(filtered_batch)
 
-        logger.info(
+        logger.debug(
             "P2P description filter progressive step: exchange=%s checked=%s/%s batch_input=%s batch_output=%s selected=%s/%s",
             exchange,
             min(start + len(batch), len(orders)),

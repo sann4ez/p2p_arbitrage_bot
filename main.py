@@ -12,7 +12,7 @@ from services.admin_notifier import configure_admin_notifier
 from tasks.statistics_scanner import run_global_statistics_scheduler
 
 logging.basicConfig(
-    level=getattr(logging, Config.LOG_LEVEL, logging.INFO),
+    level=getattr(logging, Config.LOG_LEVEL, logging.WARNING),
     format="%(asctime)s %(levelname)s:%(name)s:%(message)s",
 )
 

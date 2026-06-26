@@ -1,5 +1,6 @@
 import asyncio
 import copy
+import hashlib
 import json
 import logging
 import time
@@ -63,6 +64,7 @@ class ClassificationCacheEntry:
 
 
 _classification_cache: dict[str, ClassificationCacheEntry] = {}
+_last_warning_at: dict[str, float] = {}
 
 
 async def classify_p2p_descriptions(
@@ -78,7 +80,7 @@ async def classify_p2p_descriptions(
     ]
 
     if not prepared:
-        logger.warning("OpenAI P2P classifier skipped: no order descriptions to classify")
+        logger.debug("OpenAI P2P classifier skipped: no order descriptions to classify")
         return {}
 
     (
@@ -86,7 +88,7 @@ async def classify_p2p_descriptions(
         missing_items,
         cached_failures_count,
     ) = split_cached_classifications(prepared)
-    logger.info(
+    logger.debug(
         "OpenAI P2P classifier cache: items=%s cached=%s stale_failures=%s missing=%s ttl=%ss failure_ttl=%ss",
         len(prepared),
         len(cached_classifications),
@@ -100,7 +102,8 @@ async def classify_p2p_descriptions(
         return cached_classifications
 
     if not get_openai_api_key():
-        logger.warning("OpenAI P2P classifier skipped: OPENAI_API_KEY is empty")
+        if should_log_warning("missing_api_key"):
+            logger.warning("OpenAI P2P classifier skipped: OPENAI_API_KEY is empty")
         return cached_classifications
 
     started_at = time.monotonic()
@@ -110,7 +113,7 @@ async def classify_p2p_descriptions(
         **classifications,
     }
 
-    logger.info(
+    logger.debug(
         "OpenAI P2P classifier done: missing=%s fresh=%s cached=%s elapsed=%.2fs",
         len(missing_items),
         len(classifications),
@@ -129,7 +132,7 @@ async def classify_missing_items(
     concurrency = 1 if single_batch else get_classifier_concurrency()
     batch_size = len(items) if single_batch else get_classifier_batch_size()
 
-    logger.info(
+    logger.debug(
         "OpenAI P2P classifier batches start: items=%s batches=%s batch_size=%s concurrency=%s single_batch=%s model=%s vector_stores=%s timeout=%ss file_search_results=%s",
         len(items),
         len(batches),
@@ -183,7 +186,7 @@ async def request_classification_batch(
     timeout = aiohttp.ClientTimeout(total=get_classifier_timeout())
     started_at = time.monotonic()
 
-    logger.info(
+    logger.debug(
         "OpenAI P2P classifier batch start: batch=%s/%s items=%s",
         batch_index,
         batch_count,
@@ -196,44 +199,48 @@ async def request_classification_batch(
             async with session.post(OPENAI_RESPONSES_URL, json=payload) as response:
                 if response.status >= 400:
                     body = await response.text()
-                    logger.warning(
-                        "OpenAI P2P classifier batch failed: batch=%s/%s HTTP %s body=%s",
-                        batch_index,
-                        batch_count,
-                        response.status,
-                        safe_log_snippet(body, 500),
-                    )
+                    if should_log_warning("http_error"):
+                        logger.warning(
+                            "OpenAI P2P classifier batch failed: batch=%s/%s HTTP %s body=%s",
+                            batch_index,
+                            batch_count,
+                            response.status,
+                            safe_log_snippet(body, 500),
+                        )
                     cache_classification_failures(items)
                     return {}
 
                 response.raise_for_status()
                 data = await response.json(content_type=None)
     except aiohttp.ClientError as error:
-        logger.warning(
-            "OpenAI P2P classifier batch failed after %.2fs: batch=%s/%s error=%s",
-            time.monotonic() - started_at,
-            batch_index,
-            batch_count,
-            type(error).__name__,
-        )
+        if should_log_warning("client_error"):
+            logger.warning(
+                "OpenAI P2P classifier batch failed after %.2fs: batch=%s/%s error=%s",
+                time.monotonic() - started_at,
+                batch_index,
+                batch_count,
+                type(error).__name__,
+            )
         cache_classification_failures(items)
         return {}
     except asyncio.TimeoutError:
-        logger.warning(
-            "OpenAI P2P classifier batch timed out after %.2fs: batch=%s/%s",
-            time.monotonic() - started_at,
-            batch_index,
-            batch_count,
-        )
+        if should_log_warning("timeout"):
+            logger.warning(
+                "OpenAI P2P classifier batch timed out after %.2fs: batch=%s/%s",
+                time.monotonic() - started_at,
+                batch_index,
+                batch_count,
+            )
         cache_classification_failures(items)
         return {}
     except json.JSONDecodeError:
-        logger.warning(
-            "OpenAI P2P classifier batch returned invalid JSON after %.2fs: batch=%s/%s",
-            time.monotonic() - started_at,
-            batch_index,
-            batch_count,
-        )
+        if should_log_warning("invalid_json_response"):
+            logger.warning(
+                "OpenAI P2P classifier batch returned invalid JSON after %.2fs: batch=%s/%s",
+                time.monotonic() - started_at,
+                batch_index,
+                batch_count,
+            )
         cache_classification_failures(items)
         return {}
 
@@ -241,7 +248,7 @@ async def request_classification_batch(
     cache_classifications(items, classifications)
     cache_classification_failures(items, classifications)
 
-    logger.info(
+    logger.debug(
         "OpenAI P2P classifier batch done: batch=%s/%s items=%s classifications=%s elapsed=%.2fs",
         batch_index,
         batch_count,
@@ -440,13 +447,15 @@ def parse_classification_response(data: dict) -> dict[int, P2PDescriptionClassif
     text = extract_output_text(data)
 
     if not text:
-        logger.warning("OpenAI P2P classifier response has no output_text")
+        if should_log_warning("empty_output_text"):
+            logger.warning("OpenAI P2P classifier response has no output_text")
         return {}
 
     try:
         payload = json.loads(text)
     except json.JSONDecodeError:
-        logger.warning("OpenAI P2P classifier output is not valid JSON")
+        if should_log_warning("invalid_output_json"):
+            logger.warning("OpenAI P2P classifier output is not valid JSON")
         return {}
 
     classifications = {}
@@ -475,6 +484,7 @@ def split_cached_classifications(
     missing_items = []
     cached_failures_count = 0
     now = time.monotonic()
+    cleanup_classification_cache(now)
 
     for item in items:
         description = item["description"]
@@ -531,7 +541,9 @@ def cache_classifications(
         )
         stored += 1
 
-    logger.info(
+    prune_classification_cache()
+
+    logger.debug(
         "OpenAI P2P classifier cache stored: items=%s ttl=%ss",
         stored,
         ttl_seconds,
@@ -568,8 +580,10 @@ def cache_classification_failures(
         )
         stored += 1
 
+    prune_classification_cache()
+
     if stored:
-        logger.info(
+        logger.debug(
             "OpenAI P2P classifier failure cache stored: items=%s ttl=%ss",
             stored,
             ttl_seconds,
@@ -602,7 +616,45 @@ def normalize_description(description: str | None) -> str:
 
 
 def build_classification_cache_key(description: str) -> str:
-    return f"{P2P_CLASSIFIER_PROMPT_VERSION}:{description}"
+    digest = hashlib.sha256(description.encode("utf-8")).hexdigest()
+    return f"{P2P_CLASSIFIER_PROMPT_VERSION}:{digest}"
+
+
+def cleanup_classification_cache(now: float | None = None):
+    now = now or time.monotonic()
+    expired_keys = [
+        cache_key
+        for cache_key, entry in _classification_cache.items()
+        if entry.expires_at <= now
+    ]
+
+    for cache_key in expired_keys:
+        _classification_cache.pop(cache_key, None)
+
+    prune_classification_cache()
+
+
+def prune_classification_cache():
+    max_entries = get_classifier_cache_max_entries()
+
+    if max_entries <= 0 or len(_classification_cache) <= max_entries:
+        return
+
+    overflow = len(_classification_cache) - max_entries
+    keys_by_expiration = sorted(
+        _classification_cache,
+        key=lambda cache_key: _classification_cache[cache_key].expires_at,
+    )
+
+    for cache_key in keys_by_expiration[:overflow]:
+        _classification_cache.pop(cache_key, None)
+
+    logger.debug(
+        "OpenAI P2P classifier cache pruned: removed=%s remaining=%s max_entries=%s",
+        overflow,
+        len(_classification_cache),
+        max_entries,
+    )
 
 
 def get_classifier_failure_cache_ttl_seconds() -> float:
@@ -616,6 +668,16 @@ def get_classifier_failure_cache_ttl_seconds() -> float:
             )
         ),
     )
+
+
+def get_classifier_cache_max_entries() -> int:
+    try:
+        return max(
+            0,
+            int(getattr(Config, "OPENAI_P2P_CLASSIFICATION_CACHE_MAX_ENTRIES", 1000)),
+        )
+    except (TypeError, ValueError):
+        return 1000
 
 
 def parse_confidence(value) -> float:
@@ -639,3 +701,15 @@ def log_description_snippets(items: list[dict]):
 
 def safe_log_snippet(value: str, limit: int) -> str:
     return " ".join(str(value).split())[:limit]
+
+
+def should_log_warning(key: str) -> bool:
+    now = time.monotonic()
+    cooldown = max(60.0, float(getattr(Config, "ADMIN_ALERT_COOLDOWN_SECONDS", 900)))
+    last_at = _last_warning_at.get(key, 0.0)
+
+    if now - last_at < cooldown:
+        return False
+
+    _last_warning_at[key] = now
+    return True

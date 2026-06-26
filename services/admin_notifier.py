@@ -73,7 +73,7 @@ async def notify_admins(
                 type(error).__name__,
             )
 
-    logger.info(
+    logger.debug(
         "Admin alert sent: key=%s recipients=%s sent=%s",
         alert_key,
         len(recipient_ids),
