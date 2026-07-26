@@ -36,26 +36,30 @@ async def send_p2p_ads(
     driver: P2PExchangeDriver,
     side: str,
     title: str,
+    telegram_id: int | None = None,
 ):
-    rate_limit = await check_p2p_user_rate_limit(message.from_user.id)
+    effective_telegram_id = telegram_id or (
+        message.from_user.id if message.from_user else 0
+    )
+    rate_limit = await check_p2p_user_rate_limit(effective_telegram_id)
 
     if not rate_limit.allowed:
         await message.answer(format_rate_limit_message(rate_limit.wait_seconds))
         return
 
     async with AsyncSessionLocal() as session:
-        settings = await get_filters(session, message.from_user.id)
+        settings = await get_filters(session, effective_telegram_id)
         payment_methods = await PaymentMethodService(
             session
         ).list_user_selected_methods_for_fiat_code(
-            message.from_user.id,
+            effective_telegram_id,
             pair.fiat_code,
         )
 
     fetch_rows = get_fetch_order_count(settings)
     logger.debug(
         "P2P flow start: telegram_id=%s exchange=%s side=%s pair=%s fetch_rows=%s display_count=%s desc_mode=%s payment_categories=%s selected_banks=%s max_minutes=%s min_trades=%s min_rating=%s min_completion=%s allow_split=%s allow_third_party=%s allow_monobank_jar=%s",
-        message.from_user.id,
+        effective_telegram_id,
         driver.exchange,
         side,
         pair.label,
@@ -130,6 +134,7 @@ async def send_p2p_ads(
         title=title,
         blocks=blocks,
         order_urls=order_urls,
+        telegram_id=effective_telegram_id,
     )
 
 

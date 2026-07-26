@@ -697,10 +697,10 @@ def build_admin_statistics_text(
     directions = []
 
     if settings.scan_buy:
-        directions.append("купівля крипти")
+        directions.append("BUY")
 
     if settings.scan_sell:
-        directions.append("продаж крипти")
+        directions.append("SELL")
 
     pairs_count = len(crypto_currencies) * len(fiat_currencies)
 

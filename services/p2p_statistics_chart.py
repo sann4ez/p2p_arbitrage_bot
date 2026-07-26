@@ -382,16 +382,16 @@ def format_series_label(item: P2PPriceStatisticView) -> str:
 def format_side(side: str, exchange_code: str | None = None) -> str:
     if str(exchange_code or "").upper() == "OKX":
         labels = {
-            "BUY": "продаж",
-            "SELL": "купівля",
+            "BUY": "SELL",
+            "SELL": "BUY",
         }
     else:
         labels = {
-            "BUY": "купівля",
-            "SELL": "продаж",
+            "BUY": "BUY",
+            "SELL": "SELL",
         }
 
-    return labels.get(str(side).upper(), str(side).lower())
+    return labels.get(str(side).upper(), str(side).upper())
 
 
 def format_period_label(
