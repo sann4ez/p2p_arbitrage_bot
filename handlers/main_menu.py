@@ -73,13 +73,14 @@ from keyboards.menu import (
     FILTER_SCREEN_SPLIT_PAYMENTS,
     FILTER_SCREEN_THIRD_PARTY,
     cabinet_kb,
-    exchanges_kb,
     knowledge_base_kb,
+    p2p_exchange_inline_kb,
     p2p_filter_values_inline_kb,
     p2p_filters_inline_kb,
     p2p_pair_fiats_inline_kb,
     p2p_pairs_inline_kb,
     statistics_direction_inline_kb,
+    statistics_exchange_choice_inline_kb,
     statistics_exchange_inline_kb,
     statistics_pair_cryptos_inline_kb,
     statistics_pair_fiats_inline_kb,
@@ -166,9 +167,11 @@ TELEGRAM_PHOTO_CAPTION_LIMIT = 1024
 TELEGRAM_MESSAGE_LIMIT = 3900
 ALLOWED_KNOWLEDGE_HTML_TAGS = {"b", "i", "u", "s", "code"}
 STATISTICS_EXCHANGES = {"binance", "okx"}
+STATISTICS_DIRECTION_MIXED = "mixed"
 STATISTICS_DIRECTIONS = {
     P2P_DIRECTION_FIAT_TO_CRYPTO,
     P2P_DIRECTION_CRYPTO_TO_FIAT,
+    STATISTICS_DIRECTION_MIXED,
 }
 STATISTICS_EXCHANGE_LABELS = {
     "binance": "Binance",
@@ -177,6 +180,7 @@ STATISTICS_EXCHANGE_LABELS = {
 STATISTICS_DIRECTION_LABELS = {
     P2P_DIRECTION_FIAT_TO_CRYPTO: "Фіат → Крипта",
     P2P_DIRECTION_CRYPTO_TO_FIAT: "Крипта → Фіат",
+    STATISTICS_DIRECTION_MIXED: "Змішаний",
 }
 
 FILTER_SCREEN_TEXTS = {
@@ -260,7 +264,7 @@ async def p2p_menu(message: types.Message, state: FSMContext):
     await message.answer(
         "Оберіть біржу:\n\n"
         f"Обрані P2P пари: <b>{escape(format_pairs_summary(selected_pairs))}</b>",
-        reply_markup=exchanges_kb(),
+        reply_markup=p2p_exchange_inline_kb(),
     )
 
 
@@ -291,7 +295,7 @@ async def cabinet_menu(message: types.Message, state: FSMContext):
 async def statistics_menu(message: types.Message, state: FSMContext):
     await state.set_state(AppMenu.statistics)
     await clear_statistics_pair(state)
-    await send_statistics_pair_crypto_menu(message, state)
+    await send_statistics_exchange_choice_menu(message)
 
 
 @router.message(F.text == BTN_KNOWLEDGE_BASE)
@@ -456,6 +460,13 @@ async def p2p_pairs(message: types.Message, state: FSMContext):
 
 @router.callback_query(StateFilter(AppMenu.statistics), F.data == CB_STATS_PAIR_BACK)
 async def statistics_pair_back(callback: types.CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    exchange = normalize_statistics_exchange(data.get("statistics_exchange"))
+
+    if exchange:
+        await edit_statistics_pair_crypto_for_exchange(callback, state, exchange)
+        return
+
     await edit_statistics_pair_crypto_menu(callback, state)
 
 
@@ -475,6 +486,8 @@ async def statistics_pair_crypto_callback(
 
     selected_pairs = await load_selected_p2p_pairs(callback.from_user.id)
     crypto_pairs = filter_pairs_by_crypto(selected_pairs, crypto_currency_id)
+    data = await state.get_data()
+    exchange = normalize_statistics_exchange(data.get("statistics_exchange"))
 
     if not crypto_pairs:
         await callback.answer("Для цього стейбла немає обраних фіатів", show_alert=True)
@@ -483,11 +496,25 @@ async def statistics_pair_crypto_callback(
     await state.set_state(AppMenu.statistics)
     await callback.answer(crypto_pairs[0].crypto_code)
 
+    if exchange and len(crypto_pairs) == 1:
+        pair = crypto_pairs[0]
+        await set_statistics_pair(state, pair)
+        await set_statistics_exchange(state, exchange)
+
+        if callback.message:
+            await replace_statistics_direction_message(callback.message, pair, exchange)
+
+        return
+
     if callback.message:
         await safe_edit_callback_message(
             callback,
             build_statistics_pair_fiats_text(selected_pairs, crypto_currency_id),
-            statistics_pair_fiats_inline_kb(selected_pairs, crypto_currency_id),
+            statistics_pair_fiats_inline_kb(
+                selected_pairs,
+                crypto_currency_id,
+                back_callback=get_statistics_fiat_back_callback(selected_pairs),
+            ),
         )
 
 
@@ -517,7 +544,19 @@ async def statistics_pair_select_callback(
         await callback.answer("Ця пара не обрана або вже недоступна", show_alert=True)
         return
 
+    data = await state.get_data()
+    exchange = normalize_statistics_exchange(data.get("statistics_exchange"))
     await set_statistics_pair(state, pair)
+
+    if exchange:
+        await set_statistics_exchange(state, exchange)
+        await callback.answer(pair.label)
+
+        if callback.message:
+            await replace_statistics_direction_message(callback.message, pair, exchange)
+
+        return
+
     await callback.answer(pair.label)
 
     if callback.message:
@@ -532,12 +571,25 @@ async def statistics_exchange_callback(
     callback: types.CallbackQuery,
     state: FSMContext,
 ):
+    if (callback.data or "") == f"{CB_STATS_EXCHANGE_PREFIX}back":
+        await edit_statistics_exchange_choice_menu(callback, state)
+        return
+
     exchange, crypto_currency_id, fiat_currency_id = parse_statistics_exchange_callback(
         callback.data or ""
     )
 
-    if not exchange or not crypto_currency_id or not fiat_currency_id:
+    if not exchange:
         await callback.answer("Не вдалося прочитати біржу", show_alert=True)
+        return
+
+    if not crypto_currency_id or not fiat_currency_id:
+        await set_statistics_exchange(state, exchange)
+        await callback.answer(format_statistics_exchange_label(exchange))
+
+        if callback.message:
+            await edit_statistics_pair_crypto_for_exchange(callback, state, exchange)
+
         return
 
     pair = await load_selected_statistics_pair(
@@ -1373,6 +1425,109 @@ async def clear_statistics_pair(state: FSMContext):
     )
 
 
+async def send_statistics_exchange_choice_menu(message: types.Message):
+    await message.answer(
+        "<b>Статистика P2P</b>\n\n"
+        "Оберіть біржу для графіка статистики.",
+        reply_markup=statistics_exchange_choice_inline_kb(),
+    )
+
+
+async def edit_statistics_exchange_choice_menu(
+    callback: types.CallbackQuery,
+    state: FSMContext,
+):
+    await clear_statistics_pair(state)
+    await callback.answer()
+
+    if callback.message:
+        await safe_edit_callback_message(
+            callback,
+            "<b>Статистика P2P</b>\n\n"
+            "Оберіть біржу для графіка статистики.",
+            statistics_exchange_choice_inline_kb(),
+        )
+
+
+async def edit_statistics_pair_crypto_for_exchange(
+    callback: types.CallbackQuery,
+    state: FSMContext,
+    exchange: str,
+):
+    selected_pairs = await load_selected_p2p_pairs(callback.from_user.id)
+
+    if not selected_pairs:
+        await callback.answer("Немає обраних P2P-пар", show_alert=True)
+        return
+
+    crypto_groups_count = count_unique_cryptos(selected_pairs)
+
+    if crypto_groups_count == 1:
+        await continue_statistics_after_crypto_selected(
+            callback,
+            state,
+            exchange,
+            selected_pairs[0].crypto_currency_id,
+            selected_pairs=selected_pairs,
+            crypto_was_auto_selected=True,
+        )
+        return
+
+    await safe_edit_callback_message(
+        callback,
+        build_statistics_pair_cryptos_text(selected_pairs),
+        statistics_pair_cryptos_inline_kb(
+            selected_pairs,
+            back_callback=f"{CB_STATS_EXCHANGE_PREFIX}back",
+        ),
+    )
+
+
+async def continue_statistics_after_crypto_selected(
+    callback: types.CallbackQuery,
+    state: FSMContext,
+    exchange: str,
+    crypto_currency_id: int,
+    *,
+    selected_pairs=None,
+    crypto_was_auto_selected: bool = False,
+):
+    selected_pairs = selected_pairs or await load_selected_p2p_pairs(callback.from_user.id)
+    crypto_pairs = filter_pairs_by_crypto(selected_pairs, crypto_currency_id)
+
+    if not crypto_pairs:
+        await callback.answer("Для цього стейбла немає обраних фіатів", show_alert=True)
+        return
+
+    if len(crypto_pairs) == 1:
+        pair = crypto_pairs[0]
+        await set_statistics_pair(state, pair)
+        await set_statistics_exchange(state, exchange)
+        await callback.answer(pair.label)
+
+        if callback.message:
+            await replace_statistics_direction_message(callback.message, pair, exchange)
+
+        return
+
+    await callback.answer(crypto_pairs[0].crypto_code)
+
+    if callback.message:
+        await safe_edit_callback_message(
+            callback,
+            build_statistics_pair_fiats_text(selected_pairs, crypto_currency_id),
+            statistics_pair_fiats_inline_kb(
+                selected_pairs,
+                crypto_currency_id,
+                back_callback=(
+                    f"{CB_STATS_EXCHANGE_PREFIX}back"
+                    if crypto_was_auto_selected
+                    else CB_STATS_PAIR_BACK
+                ),
+            ),
+        )
+
+
 async def send_statistics_pair_crypto_menu(
     message: types.Message,
     state: FSMContext,
@@ -1586,7 +1741,7 @@ async def load_statistics_for_user(
         filter_hashes = None
         query_pairs = [pair]
         exchange_code = format_statistics_exchange_code(exchange)
-        side = get_statistics_side(exchange, direction)
+        sides = get_statistics_sides(exchange, direction)
         period_started_from = None
         period_started_to = None
         max_periods = STATISTICS_HISTORY_PERIODS
@@ -1636,7 +1791,7 @@ async def load_statistics_for_user(
             scope=scope,
             filter_hashes=filter_hashes,
             exchange_codes=[exchange_code],
-            sides=[side],
+            sides=sides,
             period_started_from=period_started_from,
             period_started_to=period_started_to,
         )
@@ -1748,11 +1903,9 @@ async def build_global_statistics_filter_hashes(
         )
 
         for exchange_code in exchange_codes:
-            sides = (
-                [get_statistics_side(exchange_code, selected_direction)]
-                if selected_direction
-                else get_global_statistics_sides(exchange_code, settings_model)
-            )
+            sides = get_statistics_sides(exchange_code, selected_direction) if (
+                selected_direction
+            ) else get_global_statistics_sides(exchange_code, settings_model)
 
             for side in sides:
                 hashes.add(
@@ -1799,7 +1952,7 @@ async def build_user_statistics_filter_hashes(
 
         for exchange_code in exchange_codes:
             sides = (
-                [get_statistics_side(exchange_code, selected_direction)]
+                get_statistics_sides(exchange_code, selected_direction)
                 if selected_direction
                 else ["BUY", "SELL"]
             )
@@ -2001,13 +2154,93 @@ def build_statistics_known_value_rows(
     *,
     timezone_name: str | None = None,
 ) -> list[str]:
-    return [
-        (
-            f"{format_statistics_value_period(item.period_started_at, period_type, timezone_name=timezone_name)}: "
-            f"<b>{format_stat_price(get_statistics_metric_value(item, period_type))}</b>"
+    items = sorted(
+        stats,
+        key=lambda stat: (
+            stat.period_started_at,
+            stat.exchange_code,
+            stat.pair_label,
+            get_stat_side_order(stat.side, stat.exchange_code),
+        ),
+    )
+    show_series = len(
+        {
+            (
+                getattr(item, "exchange_code", None),
+                getattr(item, "pair_label", None),
+                getattr(item, "side", None),
+            )
+            for item in stats
+        }
+    ) > 1
+    show_series_context = len(
+        {
+            (
+                getattr(item, "exchange_code", None),
+                getattr(item, "pair_label", None),
+            )
+            for item in stats
+        }
+    ) > 1
+
+    if not show_series:
+        return [
+            (
+                f"{format_statistics_value_period(item.period_started_at, period_type, timezone_name=timezone_name)}: "
+                f"<b>{format_stat_price(get_statistics_metric_value(item, period_type))}</b>"
+            )
+            for item in items
+        ]
+
+    grouped_by_period = {}
+
+    for item in items:
+        grouped_by_period.setdefault(item.period_started_at, []).append(item)
+
+    rows = []
+
+    for period_started_at, period_items in grouped_by_period.items():
+        prefix = format_statistics_value_period(
+            period_started_at,
+            period_type,
+            timezone_name=timezone_name,
         )
-        for item in sorted(stats, key=lambda stat: stat.period_started_at)
-    ]
+        values = [
+            format_statistics_known_value_item(
+                item,
+                period_type,
+                show_context=show_series_context,
+            )
+            for item in period_items
+        ]
+
+        rows.append(
+            f"{prefix}: "
+            f"{' · '.join(values)}"
+        )
+
+    return rows
+
+
+def format_statistics_known_value_item(
+    item,
+    period_type: str,
+    *,
+    show_context: bool = False,
+) -> str:
+    label = escape(format_stat_side(item.side, item.exchange_code))
+
+    if show_context:
+        label = (
+            f"{escape(str(item.exchange_code))} · "
+            f"{escape(str(item.pair_label))} · "
+            f"{label}"
+        )
+
+    return (
+        f"{label} "
+        f"<b>{format_stat_price(get_statistics_metric_value(item, period_type))}</b>"
+    )
 
 
 async def send_user_payment_fiats_menu(message: types.Message):
@@ -2615,10 +2848,13 @@ def parse_statistics_exchange_callback(
     payload = callback_data[len(CB_STATS_EXCHANGE_PREFIX):]
     parts = payload.split(":")
 
-    if len(parts) != 3:
-        return None, None, None
-
     exchange = normalize_statistics_exchange(parts[0])
+
+    if len(parts) == 1:
+        return exchange, None, None
+
+    if len(parts) != 3:
+        return exchange, None, None
 
     try:
         return exchange, int(parts[1]), int(parts[2])
@@ -2748,6 +2984,20 @@ def get_statistics_side(exchange: str | None, direction: str | None) -> str:
     return "BUY"
 
 
+def get_statistics_sides(exchange: str | None, direction: str | None) -> list[str]:
+    normalized_exchange = normalize_statistics_exchange(exchange)
+    normalized_direction = normalize_statistics_direction(direction)
+
+    if normalized_exchange and normalized_direction == STATISTICS_DIRECTION_MIXED:
+        driver = get_p2p_exchange_driver(normalized_exchange)
+        return [
+            driver.side_for_direction(P2P_DIRECTION_FIAT_TO_CRYPTO).upper(),
+            driver.side_for_direction(P2P_DIRECTION_CRYPTO_TO_FIAT).upper(),
+        ]
+
+    return [get_statistics_side(exchange, direction)]
+
+
 def build_statistics_pair_cryptos_text(pairs) -> str:
     return (
         "<b>Статистика P2P</b>\n\n"
@@ -2858,16 +3108,23 @@ def build_statistics_text(
 def format_stat_side(side: str, exchange_code: str | None = None) -> str:
     if str(exchange_code or "").upper() == "OKX":
         labels = {
-            "BUY": "продаж крипти",
-            "SELL": "купівля крипти",
+            "BUY": "SELL",
+            "SELL": "BUY",
         }
     else:
         labels = {
-            "BUY": "купівля крипти",
-            "SELL": "продаж крипти",
+            "BUY": "BUY",
+            "SELL": "SELL",
         }
 
     return labels.get(str(side).upper(), str(side))
+
+
+def get_stat_side_order(side: str, exchange_code: str | None = None) -> int:
+    return {
+        "BUY": 0,
+        "SELL": 1,
+    }.get(format_stat_side(side, exchange_code), 99)
 
 
 def format_stat_period(item, *, timezone_name: str | None = None) -> str:
@@ -2952,6 +3209,17 @@ def filter_pairs_by_crypto(pairs, crypto_currency_id: int):
         for pair in pairs
         if pair.crypto_currency_id == crypto_currency_id
     ]
+
+
+def count_unique_cryptos(pairs) -> int:
+    return len({pair.crypto_currency_id for pair in pairs})
+
+
+def get_statistics_fiat_back_callback(pairs) -> str:
+    if count_unique_cryptos(pairs) <= 1:
+        return f"{CB_STATS_EXCHANGE_PREFIX}back"
+
+    return CB_STATS_PAIR_BACK
 
 
 def find_pair(pairs, crypto_currency_id: int, fiat_currency_id: int):

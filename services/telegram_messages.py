@@ -39,8 +39,9 @@ async def send_paginated_html_blocks(
     blocks: list[str],
     order_urls: list[str | None] | None = None,
     page_size: int | None = None,
+    telegram_id: int | None = None,
 ):
-    telegram_id = message.from_user.id if message.from_user else 0
+    telegram_id = telegram_id or (message.from_user.id if message.from_user else 0)
     session_id = create_pagination_session(
         owner_telegram_id=telegram_id,
         title=title,

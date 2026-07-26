@@ -42,6 +42,7 @@ BTN_P2P_PAIRS = "💹 Мої P2P пари"
 BTN_USER_PAYMENT_METHODS = "🏦 Мої банки"
 BTN_UAH_TO_USDT = "₴ Фіат → ₮ Крипта"
 BTN_USDT_TO_UAH = "₮ Крипта → ₴ Фіат"
+BTN_MIXED_DIRECTION = "🔀 Змішаний"
 BTN_BACK = "⬅️ Назад"
 BTN_RESET_FILTERS = "♻️ Скинути фільтри"
 
@@ -81,12 +82,16 @@ CB_ADMIN_STATS_SET_PREFIX = "admstats:set:"
 CB_ADMIN_STATS_PAY_PREFIX = "admstats:pay:"
 CB_ADMIN_STATS_BANK_FIAT_PREFIX = "admstats:bank_fiat:"
 CB_ADMIN_STATS_BANK_TOGGLE_PREFIX = "admstats:bank:"
+CB_P2P_EXCHANGE_BACK = "p2pex:back"
+CB_P2P_EXCHANGE_MENU = "p2pex:menu"
+CB_P2P_EXCHANGE_PREFIX = "p2pex:"
 CB_P2P_PAIR_BACK = "p2ppair:back"
 CB_P2P_PAIR_CRYPTO_PREFIX = "p2ppair:crypto:"
 CB_P2P_PAIR_NOOP = "p2ppair:noop"
 CB_P2P_PAIR_SELECT_BACK_PREFIX = "p2ppair:select_back:"
 CB_P2P_PAIR_SELECT_CRYPTO_PREFIX = "p2ppair:select_crypto:"
 CB_P2P_PAIR_SELECT_PREFIX = "p2ppair:select:"
+CB_P2P_DIRECTION_PREFIX = "p2pdir:"
 CB_P2P_PAIR_TOGGLE_PREFIX = "p2ppair:toggle:"
 CB_USER_PAYMENT_BACK = "userpay:back"
 CB_USER_PAYMENT_FIAT_PREFIX = "userpay:fiat:"
@@ -117,15 +122,6 @@ FILTER_SCREEN_DISPLAY_COUNT = "display"
 FILTER_SCREEN_CANDIDATE_COUNT = "candidates"
 
 
-def keyboard_button(text: str, icon_custom_emoji_id: str | None = None):
-    kwargs = {"text": text}
-
-    if icon_custom_emoji_id:
-        kwargs["icon_custom_emoji_id"] = icon_custom_emoji_id
-
-    return KeyboardButton(**kwargs)
-
-
 def root_menu_kb(
     can_view_admin: bool = False,
     can_use_knowledge_base: bool = False,
@@ -152,18 +148,26 @@ def root_menu_kb(
     )
 
 
-def exchanges_kb():
-    return ReplyKeyboardMarkup(
-        keyboard=[
+def p2p_exchange_inline_kb():
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
             [
-                keyboard_button(BTN_BINANCE, BINANCE_ICON_CUSTOM_EMOJI_ID),
-                keyboard_button(BTN_OKX, OKX_ICON_CUSTOM_EMOJI_ID),
+                InlineKeyboardButton(
+                    text=BTN_BINANCE,
+                    callback_data=f"{CB_P2P_EXCHANGE_PREFIX}binance",
+                ),
+                InlineKeyboardButton(
+                    text=BTN_OKX,
+                    callback_data=f"{CB_P2P_EXCHANGE_PREFIX}okx",
+                ),
             ],
             [
-                KeyboardButton(text=BTN_BACK),
+                InlineKeyboardButton(
+                    text=BTN_BACK,
+                    callback_data=CB_P2P_EXCHANGE_BACK,
+                ),
             ],
-        ],
-        resize_keyboard=True,
+        ]
     )
 
 
@@ -639,6 +643,23 @@ def get_statistics_range_controls(period: str) -> dict[str, str] | None:
     return controls.get(period)
 
 
+def statistics_exchange_choice_inline_kb():
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text=BTN_BINANCE,
+                    callback_data=f"{CB_STATS_EXCHANGE_PREFIX}binance",
+                ),
+                InlineKeyboardButton(
+                    text=BTN_OKX,
+                    callback_data=f"{CB_STATS_EXCHANGE_PREFIX}okx",
+                ),
+            ],
+        ]
+    )
+
+
 def statistics_exchange_inline_kb(pair):
     return InlineKeyboardMarkup(
         inline_keyboard=[
@@ -685,18 +706,25 @@ def statistics_direction_inline_kb(pair, exchange: str):
             ],
             [
                 InlineKeyboardButton(
-                    text="⬅️ До бірж",
-                    callback_data=(
-                        f"{CB_STATS_PAIR_SELECT_PREFIX}"
-                        f"{pair.crypto_currency_id}:{pair.fiat_currency_id}"
+                    text=BTN_MIXED_DIRECTION,
+                    callback_data=format_statistics_direction_callback(
+                        pair,
+                        exchange,
+                        "mixed",
                     ),
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text="⬅️ До бірж",
+                    callback_data=f"{CB_STATS_EXCHANGE_PREFIX}back",
                 ),
             ],
         ]
     )
 
 
-def statistics_pair_cryptos_inline_kb(pairs):
+def statistics_pair_cryptos_inline_kb(pairs, back_callback: str | None = None):
     rows = []
 
     for crypto_code, crypto_pairs in group_pairs_by_crypto(pairs):
@@ -712,10 +740,24 @@ def statistics_pair_cryptos_inline_kb(pairs):
             ]
         )
 
+    if back_callback:
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text="⬅️ До бірж",
+                    callback_data=back_callback,
+                ),
+            ]
+        )
+
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def statistics_pair_fiats_inline_kb(pairs, crypto_currency_id: int):
+def statistics_pair_fiats_inline_kb(
+    pairs,
+    crypto_currency_id: int,
+    back_callback: str = CB_STATS_PAIR_BACK,
+):
     rows = []
     crypto_pairs = [
         pair
@@ -741,7 +783,7 @@ def statistics_pair_fiats_inline_kb(pairs, crypto_currency_id: int):
         [
             InlineKeyboardButton(
                 text="⬅️ До стейблів",
-                callback_data=CB_STATS_PAIR_BACK,
+                callback_data=back_callback,
             ),
         ]
     )
@@ -867,6 +909,9 @@ def p2p_pair_select_fiats_inline_kb(
     pairs,
     exchange: str,
     crypto_currency_id: int,
+    *,
+    back_callback: str | None = None,
+    back_text: str = "⬅️ До стейблів",
 ):
     rows = []
     crypto_pairs = [
@@ -892,13 +937,51 @@ def p2p_pair_select_fiats_inline_kb(
     rows.append(
         [
             InlineKeyboardButton(
-                text="⬅️ До стейблів",
-                callback_data=f"{CB_P2P_PAIR_SELECT_BACK_PREFIX}{exchange}",
+                text=back_text,
+                callback_data=(
+                    back_callback
+                    or f"{CB_P2P_PAIR_SELECT_BACK_PREFIX}{exchange}"
+                ),
             ),
         ]
     )
 
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def p2p_directions_inline_kb(
+    exchange: str,
+    pair,
+    *,
+    back_callback: str | None = None,
+    back_text: str = "⬅️ До фіату",
+):
+    suffix = f"{exchange}:{pair.crypto_currency_id}:{pair.fiat_currency_id}"
+    back_callback = back_callback or (
+        f"{CB_P2P_PAIR_SELECT_CRYPTO_PREFIX}"
+        f"{exchange}:{pair.crypto_currency_id}"
+    )
+
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text=BTN_UAH_TO_USDT,
+                    callback_data=f"{CB_P2P_DIRECTION_PREFIX}fiat_crypto:{suffix}",
+                ),
+                InlineKeyboardButton(
+                    text=BTN_USDT_TO_UAH,
+                    callback_data=f"{CB_P2P_DIRECTION_PREFIX}crypto_fiat:{suffix}",
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text=back_text,
+                    callback_data=back_callback,
+                ),
+            ],
+        ]
+    )
 
 
 def group_pairs_by_crypto(pairs):
@@ -1344,21 +1427,6 @@ def toggle_label(label: str, is_enabled: bool) -> str:
 
 def serialize_callback_value(value) -> str:
     return "none" if value is None else str(value)
-
-
-def p2p_directions_kb():
-    return ReplyKeyboardMarkup(
-        keyboard=[
-            [
-                KeyboardButton(text=BTN_UAH_TO_USDT),
-                KeyboardButton(text=BTN_USDT_TO_UAH),
-            ],
-            [
-                KeyboardButton(text=BTN_BACK),
-            ],
-        ],
-        resize_keyboard=True,
-    )
 
 
 def main_menu_kb():
