@@ -726,7 +726,7 @@ def build_admin_statistics_filter_screen_text(screen: str) -> str:
         "pay_methods": "Методи оплати",
         "third_party": "Треті особи",
         "split": "Кілька платежів",
-        "mono_jar": "Monobank Банка",
+        "mono_jar": "Банка / збір / конверт",
         "desc": "Перевірка опису",
         "display": "Кількість виводу",
         "candidates": "Кандидати для перевірки",

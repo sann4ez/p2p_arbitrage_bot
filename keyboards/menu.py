@@ -58,7 +58,7 @@ BTN_FILTER_PERSON_PREFIX = "👤 Фізособа/карта:"
 BTN_FILTER_OTHER_PREFIX = "🌐 Інші методи:"
 BTN_FILTER_THIRD_PARTY_PREFIX = "🧾 Треті особи:"
 BTN_FILTER_SPLIT_PAYMENTS_PREFIX = "🧩 Кілька платежів:"
-BTN_FILTER_MONOBANK_JAR_PREFIX = "🫙 Monobank Банка:"
+BTN_FILTER_MONOBANK_JAR_PREFIX = "🫙 Банка/збір/конверт:"
 
 CB_FILTERS_MENU = "p2pf:menu"
 CB_FILTERS_RESET = "p2pf:reset"
@@ -1188,7 +1188,7 @@ def p2p_filters_inline_kb(
             ],
             [
                 InlineKeyboardButton(
-                    text=f"🫙 Monobank Банка: {format_allowed_toggle(settings.allow_monobank_jar_payments)}",
+                    text=f"🫙 Банка/збір/конверт: {format_allowed_toggle(settings.allow_monobank_jar_payments)}",
                     callback_data=f"{screen_prefix}{FILTER_SCREEN_MONOBANK_JAR}",
                 ),
             ],
