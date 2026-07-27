@@ -163,7 +163,6 @@ STATISTICS_DAILY_MONTH_PERIODS = 31
 STATISTICS_WEEKLY_YEAR_PERIODS = 54
 STATISTICS_MONTHLY_YEAR_PERIODS = 12
 STATISTICS_YEARLY_DECADE_PERIODS = 10
-TELEGRAM_PHOTO_CAPTION_LIMIT = 1024
 TELEGRAM_MESSAGE_LIMIT = 3900
 ALLOWED_KNOWLEDGE_HTML_TAGS = {"b", "i", "u", "s", "code"}
 STATISTICS_EXCHANGES = {"binance", "okx"}
@@ -2068,14 +2067,17 @@ async def send_statistics_message(
 
     await message.answer_photo(
         BufferedInputFile(chart, filename=f"p2p_statistics_{period_type}.png"),
-        caption=append_statistics_values_to_caption(
-            caption,
-            stats,
-            period_type,
-            timezone_name=timezone_name,
-        ),
+        caption=caption,
         reply_markup=reply_markup,
     )
+
+    await send_statistics_values_message(
+        message,
+        stats,
+        period_type,
+        timezone_name=timezone_name,
+    )
+
 
 async def replace_statistics_message(
     message: types.Message,
@@ -2106,46 +2108,69 @@ async def replace_statistics_message(
     )
 
 
-def append_statistics_values_to_caption(
-    caption: str,
+async def send_statistics_values_message(
+    message: types.Message,
     stats,
     period_type: str,
     *,
     timezone_name: str | None = None,
-) -> str:
+):
+    for part in build_statistics_values_messages(
+        stats,
+        period_type,
+        timezone_name=timezone_name,
+    ):
+        await message.answer(part)
+
+
+def build_statistics_values_messages(
+    stats,
+    period_type: str,
+    *,
+    timezone_name: str | None = None,
+) -> list[str]:
     if not stats:
-        return caption
+        return []
 
     fiat_code = escape(str(getattr(stats[0], "fiat_code", "") or ""))
     header = f"\n\n<b>Значення:</b> {get_statistics_metric_label(period_type)}"
     if fiat_code:
         header = f"{header}, {fiat_code}"
 
-    result = f"{caption}{header}"
-
-    if len(result) > TELEGRAM_PHOTO_CAPTION_LIMIT:
-        return caption
-
+    header = header.strip()
     rows = build_statistics_known_value_rows(
         stats,
         period_type,
         timezone_name=timezone_name,
     )
-    added_rows = 0
+    messages = []
+    current = header
 
     for row in rows:
-        candidate = f"{result}\n{row}"
-        if len(candidate) > TELEGRAM_PHOTO_CAPTION_LIMIT:
-            remaining_rows = len(rows) - added_rows
-            suffix = f"\n... ще {remaining_rows}"
-            if len(f"{result}{suffix}") <= TELEGRAM_PHOTO_CAPTION_LIMIT:
-                result = f"{result}{suffix}"
-            break
+        candidate = f"{current}\n{row}"
 
-        result = candidate
-        added_rows += 1
+        if len(candidate) <= TELEGRAM_MESSAGE_LIMIT:
+            current = candidate
+            continue
 
-    return result
+        if current != header:
+            messages.append(current)
+            current = f"{header}\n{row}"
+            continue
+
+        messages.extend(split_long_message(row, TELEGRAM_MESSAGE_LIMIT))
+        current = header
+
+    if current != header or not messages:
+        messages.append(current)
+
+    if len(messages) <= 1:
+        return messages
+
+    return [
+        f"{message_text}\n\n<i>Частина {index}/{len(messages)}</i>"
+        for index, message_text in enumerate(messages, start=1)
+    ]
 
 
 def build_statistics_known_value_rows(
