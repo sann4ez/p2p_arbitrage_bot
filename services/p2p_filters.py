@@ -435,6 +435,55 @@ MONOBANK_JAR_PATTERNS = (
     ),
 )
 
+BANK_PAYMENT_LINK_COLLECTION_RE = (
+    r"(?:збір|збор(?:у|ом|і|а)?|сбір|сбор(?:а|у|ом|е)?|"
+    r"collection|fundrais\w*)"
+)
+BANK_PAYMENT_LINK_ENVELOPE_RE = r"(?:конверт(?:у|а|ом|і|е|ы)?|envelope)"
+BANK_PAYMENT_LINK_LINK_RE = r"(?:посиланн\w*|посилланн\w*|ссылк\w*|link)"
+
+# Extra patterns for the same filter as Monobank Banka. The DB field keeps the
+# legacy monobank_jar name, but the user-facing filter now means bank payment links:
+# Monobank Banka, A-Bank collection link, and PrivatBank envelope link.
+BANK_PAYMENT_LINK_EXTRA_PATTERNS = (
+    re.compile(
+        rf"(?<!\w)(?:a-bank|abank|а-банк|абанк)(?!\w).{{0,100}}"
+        rf"{BANK_PAYMENT_LINK_COLLECTION_RE}",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        rf"{BANK_PAYMENT_LINK_COLLECTION_RE}.{{0,100}}"
+        r"(?<!\w)(?:a-bank|abank|а-банк|абанк)(?!\w)",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        rf"{BANK_PAYMENT_LINK_LINK_RE}.{{0,60}}{BANK_PAYMENT_LINK_COLLECTION_RE}",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        rf"{BANK_PAYMENT_LINK_COLLECTION_RE}.{{0,60}}{BANK_PAYMENT_LINK_LINK_RE}",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        rf"(?<!\w)(?:privat|privatbank|приват|приватбанк)(?!\w).{{0,100}}"
+        rf"{BANK_PAYMENT_LINK_ENVELOPE_RE}",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        rf"{BANK_PAYMENT_LINK_ENVELOPE_RE}.{{0,100}}"
+        r"(?<!\w)(?:privat|privatbank|приват|приватбанк)(?!\w)",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        rf"{BANK_PAYMENT_LINK_LINK_RE}.{{0,60}}{BANK_PAYMENT_LINK_ENVELOPE_RE}",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        rf"{BANK_PAYMENT_LINK_ENVELOPE_RE}.{{0,60}}{BANK_PAYMENT_LINK_LINK_RE}",
+        re.IGNORECASE,
+    ),
+)
+
 ADVERTISING_DESCRIPTION_KEYWORDS = (
     "реклама",
     "це реклама",
@@ -1451,7 +1500,10 @@ def has_monobank_jar_terms(description: str | None) -> bool:
     if not text:
         return False
 
-    return any(pattern.search(text) for pattern in MONOBANK_JAR_PATTERNS)
+    return any(
+        pattern.search(text)
+        for pattern in (*MONOBANK_JAR_PATTERNS, *BANK_PAYMENT_LINK_EXTRA_PATTERNS)
+    )
 
 
 def has_advertising_terms(description: str | None) -> bool:
@@ -1551,7 +1603,7 @@ def filters_summary(settings: P2PFilterSettings) -> str:
         f"Методи: {format_payment_categories(settings.payment_categories)}",
         f"Оплата від 3-х осіб: {format_allowed(settings.allow_third_party_payments)}",
         f"Кілька платежів: {format_allowed(settings.allow_split_payments)}",
-        f"Monobank Банка: {format_allowed(settings.allow_monobank_jar_payments)}",
+        f"Банка/збір/конверт: {format_allowed(settings.allow_monobank_jar_payments)}",
         f"Перевірка опису: {format_description_check_mode(settings.description_check_mode)}",
         f"Виводити ордерів: {settings.display_order_count}",
         f"Перевіряти кандидатів: {format_candidate_order_count(settings)}",
