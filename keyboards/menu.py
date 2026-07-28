@@ -2,6 +2,7 @@ import os
 
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup
 
+from config import Config
 from db.dto import (
     CANDIDATE_ORDER_COUNT_OPTIONS,
     DESCRIPTION_CHECK_GPT,
@@ -28,6 +29,7 @@ BTN_P2P = "💱 P2P"
 BTN_KNOWLEDGE_BASE = "🧠 P2P база знань"
 BTN_STATISTICS = "📊 Статистика"
 BTN_CABINET = "👤 Особистий кабінет"
+BTN_P2P_RECOMMENDATIONS = "💡 AI-рекомендації"
 BTN_ADMIN_PANEL = "🛠 Адмін панель"
 BTN_ADMIN_CURRENCIES = "🪙 Валюти"
 BTN_ADMIN_PAYMENT_METHODS = "🏦 Методи оплати"
@@ -171,24 +173,31 @@ def p2p_exchange_inline_kb():
     )
 
 
-def cabinet_kb():
-    return ReplyKeyboardMarkup(
-        keyboard=[
-            [
-                KeyboardButton(text=BTN_MY_INFO),
-                KeyboardButton(text=BTN_P2P_FILTERS),
-            ],
-            [
-                KeyboardButton(text=BTN_P2P_PAIRS),
-                KeyboardButton(text=BTN_USER_PAYMENT_METHODS),
-            ],
-            [
-                KeyboardButton(text=BTN_SHARE_LOCATION, request_location=True),
-            ],
-            [
-                KeyboardButton(text=BTN_BACK),
-            ],
+def cabinet_kb(telegram_id: int | None = None):
+    rows = [
+        [
+            KeyboardButton(text=BTN_MY_INFO),
+            KeyboardButton(text=BTN_P2P_FILTERS),
         ],
+        [
+            KeyboardButton(text=BTN_P2P_PAIRS),
+            KeyboardButton(text=BTN_USER_PAYMENT_METHODS),
+        ],
+        [
+            KeyboardButton(text=BTN_SHARE_LOCATION, request_location=True),
+        ],
+    ]
+
+    if (
+        Config.P2P_RECOMMENDATIONS_ENABLED
+        and telegram_id in Config.P2P_RECOMMENDATIONS_TELEGRAM_IDS
+    ):
+        rows.append([KeyboardButton(text=BTN_P2P_RECOMMENDATIONS)])
+
+    rows.append([KeyboardButton(text=BTN_BACK)])
+
+    return ReplyKeyboardMarkup(
+        keyboard=rows,
         resize_keyboard=True,
     )
 

@@ -5,6 +5,12 @@ from .p2p_offer import P2POffer, P2POfferPaymentMethod
 from .p2p_price_statistic import P2PPriceStatistic
 from .payment_method import PaymentMethod
 from .rbac import Permission, Role, RolePermission, UserRole
+from .recommendation import (
+    P2PMacroAnalysis,
+    P2PMarketRecommendation,
+    P2POrderDetailCache,
+    P2PRecommendationDelivery,
+)
 from .scan_batch import ScanBatch
 from .statistics_settings import GlobalStatisticsPaymentMethod, GlobalStatisticsSettings
 from .user import User
@@ -26,6 +32,10 @@ __all__ = [
     "P2POfferPaymentMethod",
     "P2PPriceStatistic",
     "PaymentMethod",
+    "P2PMacroAnalysis",
+    "P2PMarketRecommendation",
+    "P2POrderDetailCache",
+    "P2PRecommendationDelivery",
     "Permission",
     "Role",
     "RolePermission",

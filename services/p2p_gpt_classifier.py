@@ -417,7 +417,13 @@ def should_use_single_batch() -> bool:
 def get_classifier_cache_ttl_seconds() -> float:
     return max(
         0.0,
-        float(getattr(Config, "OPENAI_P2P_CLASSIFICATION_CACHE_TTL_SECONDS", 600)),
+        float(
+            getattr(
+                Config,
+                "OPENAI_P2P_CLASSIFICATION_CACHE_TTL_SECONDS",
+                864000,
+            )
+        ),
     )
 
 
@@ -621,7 +627,7 @@ def normalize_description(description: str | None) -> str:
 
 def build_classification_cache_key(description: str) -> str:
     digest = hashlib.sha256(description.encode("utf-8")).hexdigest()
-    return f"{P2P_CLASSIFIER_PROMPT_VERSION}:{digest}"
+    return f"{P2P_CLASSIFIER_PROMPT_VERSION}:{get_openai_model()}:{digest}"
 
 
 def cleanup_classification_cache(now: float | None = None):

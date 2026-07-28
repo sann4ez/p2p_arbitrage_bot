@@ -8,6 +8,11 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
 from config import Config
+from services.p2p_detail_cache import (
+    defer_persisted_p2p_detail_refresh,
+    load_persisted_p2p_details,
+    store_persisted_p2p_details,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -120,11 +125,29 @@ async def get_cached_p2p_details(
                 missing_item_ids.append(item_id)
 
     if not missing_item_ids:
-        logger.debug(
-            "P2P detail cache hit: exchange=%s items=%s",
-            exchange,
-            len(unique_item_ids),
-        )
+        return details
+
+    persisted = await load_persisted_p2p_details(exchange, missing_item_ids)
+
+    for item_id, detail in persisted.fresh.items():
+        details[item_id] = copy.deepcopy(detail)
+
+    if persisted.fresh:
+        async with _guard_lock:
+            for item_id, detail in persisted.fresh.items():
+                _cache[get_detail_cache_key(exchange, item_id)] = CacheEntry(
+                    value=copy.deepcopy(detail),
+                    expires_at=now + ttl_seconds,
+                )
+            prune_cache_size_locked()
+
+    missing_item_ids = [
+        item_id
+        for item_id in missing_item_ids
+        if item_id not in persisted.fresh
+    ]
+
+    if not missing_item_ids:
         return details
 
     fresh_details = await get_or_fetch_cache(
@@ -134,30 +157,32 @@ async def get_cached_p2p_details(
         fetcher=lambda: fetcher(missing_item_ids),
         cache_empty=False,
         store_value=False,
+    ) or {}
+    await store_persisted_p2p_details(exchange, fresh_details)
+    fetched_ids = {
+        str(item_id)
+        for item_id, detail in fresh_details.items()
+        if item_id and isinstance(detail, dict) and detail
+    }
+    await defer_persisted_p2p_detail_refresh(
+        exchange,
+        [
+            item_id
+            for item_id in missing_item_ids
+            if item_id not in fetched_ids
+        ],
     )
 
     now = time.monotonic()
-
-    fetched_count = len(fresh_details)
-    empty_count = len(missing_item_ids) - fetched_count
-
-    logger.debug(
-        "P2P detail cache result: exchange=%s requested=%s cached=%s fetched=%s empty=%s",
-        exchange,
-        len(unique_item_ids),
-        len(details),
-        fetched_count,
-        empty_count,
-    )
 
     async with _guard_lock:
         for item_id in missing_item_ids:
             detail = (
                 fresh_details.get(item_id)
                 or fresh_details.get(str(item_id))
+                or persisted.stale.get(str(item_id))
                 or {}
             )
-
             details[str(item_id)] = copy.deepcopy(detail)
 
             if detail:
@@ -165,6 +190,7 @@ async def get_cached_p2p_details(
                     value=copy.deepcopy(detail),
                     expires_at=now + ttl_seconds,
                 )
+        prune_cache_size_locked()
 
     return details
 

@@ -273,7 +273,7 @@ async def cabinet_menu(message: types.Message, state: FSMContext):
 
     await message.answer(
         "Особистий кабінет:",
-        reply_markup=cabinet_kb(),
+        reply_markup=cabinet_kb(message.from_user.id),
     )
 
 
@@ -338,7 +338,7 @@ async def back_to_cabinet(message: types.Message, state: FSMContext):
 
     await message.answer(
         "Особистий кабінет:",
-        reply_markup=cabinet_kb(),
+        reply_markup=cabinet_kb(message.from_user.id),
     )
 
 
@@ -432,7 +432,7 @@ async def save_user_location(message: types.Message, state: FSMContext):
 
     await message.answer(
         build_location_saved_text(user),
-        reply_markup=cabinet_kb(),
+        reply_markup=cabinet_kb(message.from_user.id),
     )
 
 
@@ -441,7 +441,7 @@ async def share_location_help(message: types.Message):
     await message.answer(
         "Натисніть кнопку нижче і підтвердьте відправку геолокації. "
         "Після цього бот збереже координати, timezone і сирі Telegram-дані.",
-        reply_markup=cabinet_kb(),
+        reply_markup=cabinet_kb(message.from_user.id),
     )
 
 
@@ -3468,7 +3468,7 @@ def split_long_message(text: str, limit: int = TELEGRAM_MESSAGE_LIMIT) -> list[s
 async def send_profile_info(message: types.Message, user, roles: list[str]):
     await message.answer(
         build_profile_summary_text(user, roles),
-        reply_markup=cabinet_kb(),
+        reply_markup=cabinet_kb(message.from_user.id),
     )
 
 

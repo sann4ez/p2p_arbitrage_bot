@@ -66,6 +66,11 @@ class UserSettings(Base):
         default="regex",
         server_default="regex",
     )
+    is_recommendations_enabled: Mapped[bool] = mapped_column(
+        Boolean,
+        default=False,
+        server_default="false",
+    )
 
     created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(

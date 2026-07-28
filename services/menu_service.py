@@ -31,6 +31,14 @@ def can_use_knowledge_base(telegram_id: int | None) -> bool:
     )
 
 
+def can_use_recommendations(telegram_id: int | None) -> bool:
+    return bool(
+        Config.P2P_RECOMMENDATIONS_ENABLED
+        and telegram_id
+        and telegram_id in Config.P2P_RECOMMENDATIONS_TELEGRAM_IDS
+    )
+
+
 async def admin_menu_for_user(telegram_id: int):
     async with AsyncSessionLocal() as session:
         service = UserService(session)
