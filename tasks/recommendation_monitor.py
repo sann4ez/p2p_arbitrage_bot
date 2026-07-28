@@ -50,19 +50,9 @@ async def run_p2p_market_monitor(bot: Bot):
             scan_started_at = utc_now()
             scan_result = await run_global_statistics_scan_with_result()
 
-            if (
-                recommendation_pair_ids
-                and scan_result.skipped_reason == "disabled"
-            ):
-                scan_started_at = utc_now()
-                scan_result = await run_global_statistics_scan_with_result(
-                    force=True,
-                    pair_ids=recommendation_pair_ids,
-                )
-
             recommendations = []
             sent_count = 0
-            if recommendation_pair_ids:
+            if recommendation_pair_ids and not scan_result.skipped_reason:
                 async with AsyncSessionLocal() as session:
                     recommendations = await P2PRecommendationService(
                         session,

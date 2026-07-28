@@ -28,39 +28,21 @@ class GlobalStatisticsScanResult:
     skipped_reason: str | None = None
 
 
-async def run_global_statistics_scan_once(
-    *,
-    force: bool = False,
-    pair_ids: set[tuple[int, int]] | None = None,
-) -> GlobalStatisticsScanResult:
-    return await run_global_statistics_scan_with_result(
-        force=force,
-        pair_ids=pair_ids,
-    )
+async def run_global_statistics_scan_once() -> GlobalStatisticsScanResult:
+    return await run_global_statistics_scan_with_result()
 
 
-async def run_global_statistics_scan_with_result(
-    *,
-    force: bool = False,
-    pair_ids: set[tuple[int, int]] | None = None,
-) -> GlobalStatisticsScanResult:
+async def run_global_statistics_scan_with_result() -> GlobalStatisticsScanResult:
     async with _GLOBAL_SCAN_LOCK:
-        return await _run_global_statistics_scan_once(
-            force=force,
-            pair_ids=pair_ids,
-        )
+        return await _run_global_statistics_scan_once()
 
 
-async def _run_global_statistics_scan_once(
-    *,
-    force: bool,
-    pair_ids: set[tuple[int, int]] | None,
-) -> GlobalStatisticsScanResult:
+async def _run_global_statistics_scan_once() -> GlobalStatisticsScanResult:
     async with AsyncSessionLocal() as session:
         service = StatisticsSettingsService(session)
         settings_model = await service.get_or_create_settings()
 
-        if not settings_model.is_enabled and not force:
+        if not settings_model.is_enabled:
             logger.debug("Global P2P statistics scan skipped: disabled")
             return GlobalStatisticsScanResult(
                 skipped_reason="disabled",
@@ -95,9 +77,6 @@ async def _run_global_statistics_scan_once(
 
     for crypto in crypto_currencies:
         for fiat in fiat_currencies:
-            if pair_ids is not None and (crypto.id, fiat.id) not in pair_ids:
-                continue
-
             pair = P2PUserPair(
                 crypto_currency_id=crypto.id,
                 fiat_currency_id=fiat.id,

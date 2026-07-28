@@ -48,6 +48,44 @@ class MarketMonitorLoopTests(unittest.IsolatedAsyncioTestCase):
 
         scan_mock.assert_awaited_once_with()
 
+    async def test_user_pairs_do_not_force_or_parameterize_statistics_scan(self):
+        sleep_mock = AsyncMock(
+            side_effect=[None, asyncio.CancelledError()],
+        )
+        scan_mock = AsyncMock(
+            return_value=GlobalStatisticsScanResult(
+                skipped_reason="disabled",
+            ),
+        )
+
+        with (
+            patch(
+                "tasks.recommendation_monitor.asyncio.sleep",
+                new=sleep_mock,
+            ),
+            patch(
+                "tasks.recommendation_monitor.get_enabled_recommendation_pair_ids",
+                new=AsyncMock(return_value={(1, 2), (3, 4)}),
+            ),
+            patch(
+                "tasks.recommendation_monitor.run_global_statistics_scan_with_result",
+                new=scan_mock,
+            ),
+            patch(
+                "tasks.recommendation_monitor.can_call_openai",
+                return_value=True,
+            ),
+            patch.object(
+                Config,
+                "P2P_RECOMMENDATION_MONITOR_SUCCESS_ALERTS_ENABLED",
+                False,
+            ),
+        ):
+            with self.assertRaises(asyncio.CancelledError):
+                await run_p2p_market_monitor(AsyncMock())
+
+        scan_mock.assert_awaited_once_with()
+
 
 class RecommendationMonitorTests(unittest.TestCase):
 
