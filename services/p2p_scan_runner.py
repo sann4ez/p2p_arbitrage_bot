@@ -31,6 +31,7 @@ async def fetch_filtered_p2p_orders(
     payment_methods,
     output_limit: int | None = None,
     ensure_details: bool = False,
+    force_orders_refresh: bool = False,
 ) -> list[dict]:
     try:
         driver = get_p2p_exchange_driver(exchange_code)
@@ -45,6 +46,7 @@ async def fetch_filtered_p2p_orders(
         rows=fetch_rows,
         pair_key=pair.label,
         fetcher=lambda: driver.fetch_orders(side, pair, fetch_rows),
+        force_refresh=force_orders_refresh,
     )
     logger.debug(
         "P2P scan fetched: exchange=%s pair=%s side=%s rows=%s",

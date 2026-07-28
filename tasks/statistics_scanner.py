@@ -5,7 +5,6 @@ from dataclasses import dataclass
 from config import Config
 from db.base import AsyncSessionLocal
 from db.dto import P2PUserPair
-from services.admin_notifier import notify_admins
 from services.p2p_filters import get_fetch_order_count
 from services.p2p_scan_runner import fetch_filtered_p2p_orders
 from services.p2p_statistics_service import (
@@ -18,51 +17,26 @@ from services.statistics_settings_service import StatisticsSettingsService
 
 
 logger = logging.getLogger(__name__)
-DEFAULT_SCAN_INTERVAL_SECONDS = 3600
 _GLOBAL_SCAN_LOCK = asyncio.Lock()
 
 
 @dataclass(frozen=True)
 class GlobalStatisticsScanResult:
-    interval_seconds: int
     scans_attempted: int = 0
     scans_with_orders: int = 0
     saved_orders: int = 0
     skipped_reason: str | None = None
 
 
-async def run_global_statistics_scheduler():
-    while True:
-        interval_seconds = DEFAULT_SCAN_INTERVAL_SECONDS
-
-        try:
-            interval_seconds = await run_global_statistics_scan_once()
-        except asyncio.CancelledError:
-            raise
-        except Exception as error:
-            logger.exception("Global P2P statistics scan failed")
-            await notify_admins(
-                "Помилка глобального сканера статистики",
-                (
-                    "Фоновий збір P2P-статистики завершився помилкою: "
-                    f"{type(error).__name__}: {error}"
-                ),
-                key="global_statistics_scan_failed",
-            )
-
-        await asyncio.sleep(max(interval_seconds, 60))
-
-
 async def run_global_statistics_scan_once(
     *,
     force: bool = False,
     pair_ids: set[tuple[int, int]] | None = None,
-) -> int:
-    result = await run_global_statistics_scan_with_result(
+) -> GlobalStatisticsScanResult:
+    return await run_global_statistics_scan_with_result(
         force=force,
         pair_ids=pair_ids,
     )
-    return result.interval_seconds
 
 
 async def run_global_statistics_scan_with_result(
@@ -85,12 +59,10 @@ async def _run_global_statistics_scan_once(
     async with AsyncSessionLocal() as session:
         service = StatisticsSettingsService(session)
         settings_model = await service.get_or_create_settings()
-        interval_seconds = settings_model.interval_seconds or DEFAULT_SCAN_INTERVAL_SECONDS
 
         if not settings_model.is_enabled and not force:
             logger.debug("Global P2P statistics scan skipped: disabled")
             return GlobalStatisticsScanResult(
-                interval_seconds=interval_seconds,
                 skipped_reason="disabled",
             )
 
@@ -106,7 +78,6 @@ async def _run_global_statistics_scan_once(
     if not crypto_currencies or not fiat_currencies:
         logger.debug("Global P2P statistics scan skipped: no currencies")
         return GlobalStatisticsScanResult(
-            interval_seconds=interval_seconds,
             skipped_reason="no_currencies",
         )
 
@@ -152,6 +123,7 @@ async def _run_global_statistics_scan_once(
                         settings=filter_settings,
                         fetch_rows=fetch_rows,
                         payment_methods=payment_methods,
+                        force_orders_refresh=True,
                     )
                     scan_count += 1
 
@@ -170,14 +142,12 @@ async def _run_global_statistics_scan_once(
                     )
 
     logger.debug(
-        "Global P2P statistics scan done: scans=%s saved_orders=%s next_interval=%ss",
+        "Global P2P statistics scan done: scans=%s saved_orders=%s",
         scan_count,
         saved_count,
-        interval_seconds,
     )
     await cleanup_raw_scan_history(Config.P2P_RAW_SCAN_RETENTION_HOURS)
     return GlobalStatisticsScanResult(
-        interval_seconds=interval_seconds,
         scans_attempted=scan_count,
         scans_with_orders=scans_with_orders,
         saved_orders=saved_count,

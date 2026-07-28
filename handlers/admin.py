@@ -5,6 +5,7 @@ from aiogram import F, Router, types
 from aiogram.filters import StateFilter
 from aiogram.fsm.context import FSMContext
 
+from config import Config
 from db.base import AsyncSessionLocal
 from db.models import FiatCurrency, PaymentMethod
 from db.dto import (
@@ -703,17 +704,28 @@ def build_admin_statistics_text(
         directions.append("SELL")
 
     pairs_count = len(crypto_currencies) * len(fiat_currencies)
+    min_interval_seconds = max(
+        60,
+        Config.P2P_RECOMMENDATION_MIN_INTERVAL_SECONDS,
+    )
+    max_interval_seconds = max(
+        min_interval_seconds,
+        Config.P2P_RECOMMENDATION_MAX_INTERVAL_SECONDS,
+    )
+    min_interval_minutes = round(min_interval_seconds / 60, 1)
+    max_interval_minutes = round(max_interval_seconds / 60, 1)
 
     return (
         "<b>Глобальна статистика P2P</b>\n\n"
         f"Стан: <b>{'увімкнено' if settings.is_enabled else 'вимкнено'}</b>\n"
-        f"Інтервал: <b>{settings.interval_seconds // 60}</b> хв\n"
+        f"Інтервал: <b>{min_interval_minutes:g}-{max_interval_minutes:g}</b> хв\n"
         f"Біржі: <b>{escape(', '.join(exchanges) or 'немає')}</b>\n"
         f"Напрямки: <b>{escape(', '.join(directions) or 'немає')}</b>\n"
         f"Пар для скану: <b>{pairs_count}</b>\n"
         f"Банків обрано: <b>{len(selected_method_ids)}</b>\n\n"
         f"{filters_summary(filter_settings)}\n\n"
-        "Погодинний скан формує загальну статистику по всіх доданих crypto/fiat парах."
+        "Автоматичний скан формує загальну статистику по всіх доданих "
+        "crypto/fiat парах через випадкові проміжки часу."
     )
 
 
@@ -735,7 +747,7 @@ def build_admin_statistics_filter_screen_text(screen: str) -> str:
 
     return (
         f"<b>{escape(title)}</b>\n\n"
-        "Оберіть значення для щогодинного фільтра глобальної статистики."
+        "Оберіть значення для автоматичного фільтра глобальної статистики."
     )
 
 

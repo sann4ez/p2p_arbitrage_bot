@@ -1,14 +1,56 @@
+import asyncio
 import unittest
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from config import Config
 from tasks.recommendation_monitor import (
     build_success_report,
     next_interval_seconds,
+    run_p2p_market_monitor,
 )
+from tasks.statistics_scanner import GlobalStatisticsScanResult
+
+
+class MarketMonitorLoopTests(unittest.IsolatedAsyncioTestCase):
+    async def test_every_cycle_runs_global_statistics_scan(self):
+        sleep_mock = AsyncMock(
+            side_effect=[None, asyncio.CancelledError()],
+        )
+        scan_mock = AsyncMock(
+            return_value=GlobalStatisticsScanResult(),
+        )
+
+        with (
+            patch(
+                "tasks.recommendation_monitor.asyncio.sleep",
+                new=sleep_mock,
+            ),
+            patch(
+                "tasks.recommendation_monitor.get_enabled_recommendation_pair_ids",
+                new=AsyncMock(return_value=set()),
+            ),
+            patch(
+                "tasks.recommendation_monitor.run_global_statistics_scan_with_result",
+                new=scan_mock,
+            ),
+            patch(
+                "tasks.recommendation_monitor.can_call_openai",
+                return_value=False,
+            ),
+            patch.object(
+                Config,
+                "P2P_RECOMMENDATION_MONITOR_SUCCESS_ALERTS_ENABLED",
+                False,
+            ),
+        ):
+            with self.assertRaises(asyncio.CancelledError):
+                await run_p2p_market_monitor(AsyncMock())
+
+        scan_mock.assert_awaited_once_with()
 
 
 class RecommendationMonitorTests(unittest.TestCase):
+
     def test_random_interval_stays_inside_configured_bounds(self):
         with (
             patch.object(Config, "P2P_RECOMMENDATION_MIN_INTERVAL_SECONDS", 360),

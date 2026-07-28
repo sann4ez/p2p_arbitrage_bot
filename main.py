@@ -8,8 +8,7 @@ from config import Config
 from db.bootstrap import bootstrap_database
 from handlers import register_routes
 from services.admin_notifier import configure_admin_notifier
-from tasks.recommendation_monitor import run_p2p_recommendation_monitor
-from tasks.statistics_scanner import run_global_statistics_scheduler
+from tasks.recommendation_monitor import run_p2p_market_monitor
 
 logging.basicConfig(
     level=getattr(logging, Config.LOG_LEVEL, logging.WARNING),
@@ -30,8 +29,7 @@ async def main():
     register_routes(dp)
 
     background_tasks = [
-        asyncio.create_task(run_global_statistics_scheduler()),
-        asyncio.create_task(run_p2p_recommendation_monitor(bot)),
+        asyncio.create_task(run_p2p_market_monitor(bot)),
     ]
 
     try:
