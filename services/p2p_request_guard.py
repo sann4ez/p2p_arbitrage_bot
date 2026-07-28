@@ -74,6 +74,7 @@ async def get_cached_p2p_orders(
     pair_key: str | None = None,
     fetcher: Callable[[], Awaitable[list[dict]]],
     on_fresh: Callable[[list[dict]], Awaitable[None]] | None = None,
+    force_refresh: bool = False,
 ) -> list[dict]:
     pair_part = pair_key or "default"
     cache_key = f"p2p-orders:{exchange}:{direction}:{pair_part}:{rows}"
@@ -84,6 +85,7 @@ async def get_cached_p2p_orders(
         ttl_seconds=get_orders_cache_ttl_seconds(),
         fetcher=fetcher,
         on_fresh=on_fresh,
+        force_refresh=force_refresh,
     )
 
     logger.debug(
@@ -204,8 +206,11 @@ async def get_or_fetch_cache(
     cache_empty: bool = True,
     store_value: bool = True,
     on_fresh: Callable[[object], Awaitable[None]] | None = None,
+    force_refresh: bool = False,
 ):
-    cached_value = await get_cached_value(cache_key)
+    cached_value = None
+    if not force_refresh:
+        cached_value = await get_cached_value(cache_key)
 
     if cached_value is not None:
         logger.debug("P2P cache hit: key=%s", cache_key)
@@ -214,14 +219,17 @@ async def get_or_fetch_cache(
     lock = await get_cache_lock(cache_key)
 
     async with lock:
-        cached_value = await get_cached_value(cache_key)
+        cached_value = None
+        if not force_refresh:
+            cached_value = await get_cached_value(cache_key)
 
         if cached_value is not None:
             logger.debug("P2P cache hit after lock: key=%s", cache_key)
             return cached_value
 
         logger.debug(
-            "P2P cache miss: key=%s ttl=%ss",
+            "P2P cache %s: key=%s ttl=%ss",
+            "refresh" if force_refresh else "miss",
             cache_key,
             ttl_seconds,
         )

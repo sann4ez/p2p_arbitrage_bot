@@ -46,6 +46,50 @@ class P2PRequestGuardTests(unittest.TestCase):
         self.assertLessEqual(len(p2p_request_guard._cache), 2)
         fetcher.assert_not_awaited()
 
+    def test_force_refresh_replaces_cached_order_list(self):
+        fetcher = AsyncMock(
+            side_effect=[
+                [{"id": "old"}],
+                [{"id": "fresh"}],
+            ]
+        )
+
+        async def run_test():
+            first = await p2p_request_guard.get_cached_p2p_orders(
+                exchange="binance",
+                direction="SELL",
+                rows=20,
+                pair_key="USDT/UAH",
+                fetcher=fetcher,
+            )
+            refreshed = await p2p_request_guard.get_cached_p2p_orders(
+                exchange="binance",
+                direction="SELL",
+                rows=20,
+                pair_key="USDT/UAH",
+                fetcher=fetcher,
+                force_refresh=True,
+            )
+            cached = await p2p_request_guard.get_cached_p2p_orders(
+                exchange="binance",
+                direction="SELL",
+                rows=20,
+                pair_key="USDT/UAH",
+                fetcher=fetcher,
+            )
+            return first, refreshed, cached
+
+        with patch(
+            "services.p2p_request_guard.wait_for_global_cooldown",
+            new=AsyncMock(),
+        ):
+            first, refreshed, cached = asyncio.run(run_test())
+
+        self.assertEqual([{"id": "old"}], first)
+        self.assertEqual([{"id": "fresh"}], refreshed)
+        self.assertEqual([{"id": "fresh"}], cached)
+        self.assertEqual(2, fetcher.await_count)
+
 
 if __name__ == "__main__":
     unittest.main()

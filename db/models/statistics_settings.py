@@ -12,7 +12,6 @@ class GlobalStatisticsSettings(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     is_enabled: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")
-    interval_seconds: Mapped[int] = mapped_column(Integer, default=3600, server_default="3600")
 
     scan_binance: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")
     scan_okx: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")
