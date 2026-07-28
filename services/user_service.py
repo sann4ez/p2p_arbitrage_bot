@@ -88,6 +88,31 @@ class UserService:
 
         return await self.rbac_repo.get_user_permission_codes(user.id)
 
+    async def get_recommendations_enabled(self, telegram_id: int) -> bool:
+        user = await self.get_user_by_telegram_id(telegram_id)
+
+        if not user:
+            return False
+
+        settings = await self.repo.ensure_settings(user.id)
+        return bool(settings.is_recommendations_enabled)
+
+    async def toggle_recommendations(self, telegram_id: int) -> bool:
+        if telegram_id not in Config.P2P_RECOMMENDATIONS_TELEGRAM_IDS:
+            return False
+
+        user = await self.get_user_by_telegram_id(telegram_id)
+
+        if not user:
+            return False
+
+        settings = await self.repo.ensure_settings(user.id)
+        settings.is_recommendations_enabled = not bool(
+            settings.is_recommendations_enabled
+        )
+        await self.session.commit()
+        return settings.is_recommendations_enabled
+
     def get_default_role_code(self, telegram_id: int) -> str:
         if telegram_id in Config.SUPER_ADMIN_TELEGRAM_IDS:
             return ROLE_SUPER_ADMIN

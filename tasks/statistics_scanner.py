@@ -1,6 +1,8 @@
 import asyncio
 import logging
+from dataclasses import dataclass
 
+from config import Config
 from db.base import AsyncSessionLocal
 from db.dto import P2PUserPair
 from services.admin_notifier import notify_admins
@@ -9,6 +11,7 @@ from services.p2p_scan_runner import fetch_filtered_p2p_orders
 from services.p2p_statistics_service import (
     STAT_SCOPE_GLOBAL,
     build_statistics_filter_hash,
+    cleanup_raw_scan_history,
     record_p2p_scan_snapshot,
 )
 from services.statistics_settings_service import StatisticsSettingsService
@@ -16,6 +19,16 @@ from services.statistics_settings_service import StatisticsSettingsService
 
 logger = logging.getLogger(__name__)
 DEFAULT_SCAN_INTERVAL_SECONDS = 3600
+_GLOBAL_SCAN_LOCK = asyncio.Lock()
+
+
+@dataclass(frozen=True)
+class GlobalStatisticsScanResult:
+    interval_seconds: int
+    scans_attempted: int = 0
+    scans_with_orders: int = 0
+    saved_orders: int = 0
+    skipped_reason: str | None = None
 
 
 async def run_global_statistics_scheduler():
@@ -40,15 +53,46 @@ async def run_global_statistics_scheduler():
         await asyncio.sleep(max(interval_seconds, 60))
 
 
-async def run_global_statistics_scan_once() -> int:
+async def run_global_statistics_scan_once(
+    *,
+    force: bool = False,
+    pair_ids: set[tuple[int, int]] | None = None,
+) -> int:
+    result = await run_global_statistics_scan_with_result(
+        force=force,
+        pair_ids=pair_ids,
+    )
+    return result.interval_seconds
+
+
+async def run_global_statistics_scan_with_result(
+    *,
+    force: bool = False,
+    pair_ids: set[tuple[int, int]] | None = None,
+) -> GlobalStatisticsScanResult:
+    async with _GLOBAL_SCAN_LOCK:
+        return await _run_global_statistics_scan_once(
+            force=force,
+            pair_ids=pair_ids,
+        )
+
+
+async def _run_global_statistics_scan_once(
+    *,
+    force: bool,
+    pair_ids: set[tuple[int, int]] | None,
+) -> GlobalStatisticsScanResult:
     async with AsyncSessionLocal() as session:
         service = StatisticsSettingsService(session)
         settings_model = await service.get_or_create_settings()
         interval_seconds = settings_model.interval_seconds or DEFAULT_SCAN_INTERVAL_SECONDS
 
-        if not settings_model.is_enabled:
+        if not settings_model.is_enabled and not force:
             logger.debug("Global P2P statistics scan skipped: disabled")
-            return interval_seconds
+            return GlobalStatisticsScanResult(
+                interval_seconds=interval_seconds,
+                skipped_reason="disabled",
+            )
 
         crypto_currencies = await service.list_crypto_currencies()
         fiat_currencies = await service.list_fiat_currencies()
@@ -61,10 +105,14 @@ async def run_global_statistics_scan_once() -> int:
 
     if not crypto_currencies or not fiat_currencies:
         logger.debug("Global P2P statistics scan skipped: no currencies")
-        return interval_seconds
+        return GlobalStatisticsScanResult(
+            interval_seconds=interval_seconds,
+            skipped_reason="no_currencies",
+        )
 
     fetch_rows = get_fetch_order_count(filter_settings)
     scan_count = 0
+    scans_with_orders = 0
     saved_count = 0
     logger.debug(
         "Global P2P statistics scan start: exchanges=%s crypto=%s fiat=%s fetch_rows=%s",
@@ -76,6 +124,9 @@ async def run_global_statistics_scan_once() -> int:
 
     for crypto in crypto_currencies:
         for fiat in fiat_currencies:
+            if pair_ids is not None and (crypto.id, fiat.id) not in pair_ids:
+                continue
+
             pair = P2PUserPair(
                 crypto_currency_id=crypto.id,
                 fiat_currency_id=fiat.id,
@@ -107,6 +158,7 @@ async def run_global_statistics_scan_once() -> int:
                     if not orders:
                         continue
 
+                    scans_with_orders += 1
                     saved_count += await record_p2p_scan_snapshot(
                         exchange_code=exchange_code,
                         pair=pair,
@@ -123,7 +175,13 @@ async def run_global_statistics_scan_once() -> int:
         saved_count,
         interval_seconds,
     )
-    return interval_seconds
+    await cleanup_raw_scan_history(Config.P2P_RAW_SCAN_RETENTION_HOURS)
+    return GlobalStatisticsScanResult(
+        interval_seconds=interval_seconds,
+        scans_attempted=scan_count,
+        scans_with_orders=scans_with_orders,
+        saved_orders=saved_count,
+    )
 
 
 async def get_global_payment_methods_for_fiat(fiat_code: str):

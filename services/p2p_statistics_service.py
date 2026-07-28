@@ -4,7 +4,7 @@ import json
 from datetime import datetime, timedelta
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 
-from sqlalchemy import and_, or_, select
+from sqlalchemy import and_, delete, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.base import AsyncSessionLocal
@@ -62,6 +62,36 @@ PRICE_QUANT = Decimal("0.000001")
 STAT_SCOPE_GLOBAL = "global"
 STAT_SCOPE_FILTER = "filter"
 DEFAULT_FILTER_HASH = "default"
+
+
+async def cleanup_raw_scan_history(retention_hours: int) -> int:
+    if retention_hours <= 0:
+        return 0
+
+    cutoff = datetime.utcnow() - timedelta(hours=retention_hours)
+    expired_batch_ids = (
+        select(ScanBatch.id)
+        .where(
+            ScanBatch.started_at < cutoff,
+            ScanBatch.status != "running",
+        )
+        .order_by(ScanBatch.started_at)
+        .limit(250)
+    )
+
+    try:
+        async with AsyncSessionLocal() as session:
+            result = await session.execute(
+                delete(ScanBatch).where(ScanBatch.id.in_(expired_batch_ids))
+            )
+            await session.commit()
+            return max(0, int(result.rowcount or 0))
+    except Exception as error:
+        logger.warning(
+            "Raw P2P scan cleanup failed: error=%s",
+            type(error).__name__,
+        )
+        return 0
 
 
 class P2PStatisticsService:
