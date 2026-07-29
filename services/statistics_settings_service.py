@@ -88,6 +88,20 @@ class StatisticsSettingsService:
 
         return set(result.scalars().all())
 
+    async def list_selected_payment_methods(self) -> list[PaymentMethod]:
+        result = await self.session.execute(
+            select(PaymentMethod)
+            .join(
+                GlobalStatisticsPaymentMethod,
+                GlobalStatisticsPaymentMethod.payment_method_id
+                == PaymentMethod.id,
+            )
+            .where(PaymentMethod.is_active.is_(True))
+            .order_by(PaymentMethod.name)
+        )
+
+        return list(result.scalars().all())
+
     async def list_payment_methods_for_fiat(
         self,
         fiat_currency_id: int,

@@ -4,6 +4,10 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from config import Config
 
 
+def utc_now_naive() -> datetime:
+    return datetime.now(UTC).replace(tzinfo=None)
+
+
 def display_datetime(value: datetime, timezone_name: str | None = None) -> datetime:
     if value.tzinfo is None:
         value = value.replace(tzinfo=UTC)

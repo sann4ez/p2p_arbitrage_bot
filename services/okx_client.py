@@ -12,7 +12,6 @@ logger = logging.getLogger(__name__)
 
 OKX_P2P_URL = "https://www.okx.com/v3/c2c/tradingOrders/books"
 OKX_P2P_DETAIL_URL = "https://www.okx.com/v3/c2c/tradingOrders/{order_id}"
-OKX_DETAIL_CONCURRENCY = 10
 OKX_P2P_MARKET_URLS = {
     "sell": "https://www.okx.com/p2p-markets/uah/buy-usdt",
     "buy": "https://www.okx.com/p2p-markets/uah/sell-usdt",
@@ -146,7 +145,7 @@ async def fetch_okx_p2p_details(
         return {}
 
     timeout = aiohttp.ClientTimeout(total=20)
-    semaphore = asyncio.Semaphore(OKX_DETAIL_CONCURRENCY)
+    semaphore = asyncio.Semaphore(Config.P2P_DETAIL_FETCH_CONCURRENCY)
 
     try:
         async with aiohttp.ClientSession(headers=OKX_HEADERS, timeout=timeout) as session:

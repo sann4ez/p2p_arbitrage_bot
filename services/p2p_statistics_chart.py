@@ -460,6 +460,9 @@ def text_size(draw, text: str, font) -> tuple[int, int]:
 def image_to_png_bytes(image) -> bytes:
     from io import BytesIO
 
-    buffer = BytesIO()
-    image.save(buffer, format="PNG", optimize=True)
-    return buffer.getvalue()
+    try:
+        with BytesIO() as buffer:
+            image.save(buffer, format="PNG", optimize=True)
+            return buffer.getvalue()
+    finally:
+        image.close()

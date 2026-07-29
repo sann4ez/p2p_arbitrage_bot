@@ -29,6 +29,7 @@ from services.p2p_exchange_drivers import get_p2p_exchange_driver
 from services.p2p_recommendation_service import RecommendationRecord
 from services.p2p_recommendation_signals import ACTION_BUY, ACTION_SELL
 from services.p2p_statistics_service import STAT_SCOPE_GLOBAL, normalize_side
+from services.time_utils import utc_now_naive as utc_now
 
 
 logger = logging.getLogger(__name__)
@@ -37,10 +38,6 @@ DELIVERY_SENT = "sent"
 DELIVERY_ACCEPTED = "accepted"
 DELIVERY_SKIPPED = "skipped"
 DELIVERY_FAILED = "failed"
-
-
-def utc_now() -> datetime:
-    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 @dataclass(frozen=True)

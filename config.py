@@ -38,6 +38,18 @@ def parse_bool(value: str | None, default: bool = False) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "y", "on"}
 
 
+def normalize_database_url(value: str) -> str:
+    value = value.strip()
+
+    if value.startswith("postgres://"):
+        return f"postgresql+asyncpg://{value[len('postgres://'):]}"
+
+    if value.startswith("postgresql://"):
+        return f"postgresql+asyncpg://{value[len('postgresql://'):]}"
+
+    return value
+
+
 class Config:
     LOG_LEVEL = os.getenv("LOG_LEVEL", "WARNING").upper()
     DISPLAY_TIMEZONE = os.getenv("DISPLAY_TIMEZONE", "Europe/Kiev")
@@ -74,6 +86,10 @@ class Config:
     P2P_GLOBAL_COOLDOWN_SECONDS = float(os.getenv("P2P_GLOBAL_COOLDOWN_SECONDS", "2"))
     P2P_CACHE_TTL_SECONDS = float(os.getenv("P2P_CACHE_TTL_SECONDS", "30"))
     P2P_DETAILS_CACHE_TTL_SECONDS = float(os.getenv("P2P_DETAILS_CACHE_TTL_SECONDS", "90"))
+    P2P_DETAIL_FETCH_CONCURRENCY = max(
+        1,
+        int(os.getenv("P2P_DETAIL_FETCH_CONCURRENCY", "10")),
+    )
     P2P_CACHE_MAX_ENTRIES = int(os.getenv("P2P_CACHE_MAX_ENTRIES", "1000"))
     P2P_CACHE_CLEANUP_INTERVAL_SECONDS = float(
         os.getenv("P2P_CACHE_CLEANUP_INTERVAL_SECONDS", "60")
@@ -87,6 +103,16 @@ class Config:
     )
     OKX_AUTHORIZATION = os.getenv("OKX_AUTHORIZATION", "")
     DATABASE_URL = os.getenv("DATABASE_URL", "")
+    DB_POOL_SIZE = max(1, int(os.getenv("DB_POOL_SIZE", "5")))
+    DB_MAX_OVERFLOW = max(0, int(os.getenv("DB_MAX_OVERFLOW", "5")))
+    DB_POOL_TIMEOUT_SECONDS = max(
+        1.0,
+        float(os.getenv("DB_POOL_TIMEOUT_SECONDS", "30")),
+    )
+    DB_POOL_RECYCLE_SECONDS = max(
+        0,
+        int(os.getenv("DB_POOL_RECYCLE_SECONDS", "1800")),
+    )
     DB_AUTO_CREATE_TABLES = parse_bool(os.getenv("DB_AUTO_CREATE_TABLES"), True)
     DB_AUTO_SEED_REFERENCE_DATA = parse_bool(
         os.getenv("DB_AUTO_SEED_REFERENCE_DATA"),
@@ -108,10 +134,6 @@ class Config:
     )
     P2P_RECOMMENDATION_MAX_INTERVAL_SECONDS = int(
         os.getenv("P2P_RECOMMENDATION_MAX_INTERVAL_SECONDS", "720")
-    )
-    P2P_RECOMMENDATION_MONITOR_SUCCESS_ALERTS_ENABLED = parse_bool(
-        os.getenv("P2P_RECOMMENDATION_MONITOR_SUCCESS_ALERTS_ENABLED"),
-        True,
     )
     P2P_RECOMMENDATION_MIN_HISTORY_POINTS = int(
         os.getenv("P2P_RECOMMENDATION_MIN_HISTORY_POINTS", "24")
@@ -149,17 +171,27 @@ class Config:
     P2P_DETAIL_REFRESH_FAILURE_RETRY_SECONDS = int(
         os.getenv("P2P_DETAIL_REFRESH_FAILURE_RETRY_SECONDS", "3600")
     )
+    P2P_DETAIL_CACHE_RETENTION_DAYS = max(
+        0,
+        int(os.getenv("P2P_DETAIL_CACHE_RETENTION_DAYS", "14")),
+    )
+    P2P_DETAIL_CACHE_CLEANUP_BATCH_SIZE = max(
+        1,
+        int(os.getenv("P2P_DETAIL_CACHE_CLEANUP_BATCH_SIZE", "1000")),
+    )
     P2P_RAW_SCAN_RETENTION_HOURS = int(
-        os.getenv("P2P_RAW_SCAN_RETENTION_HOURS", "72")
+        os.getenv("P2P_RAW_SCAN_RETENTION_HOURS", "24")
     )
     SPREAD_THRESHOLD = 1.5  # мінімальний спред у %
     POLL_INTERVAL = 15      # секунд між опитуванням бірж
 
-    DB_URL = DATABASE_URL or (
-        f"postgresql+asyncpg://"
-        f"{os.getenv('DB_USER')}:"
-        f"{os.getenv('DB_PASSWORD')}@"
-        f"{os.getenv('DB_HOST')}:"
-        f"{os.getenv('DB_PORT')}/"
-        f"{os.getenv('DB_NAME')}"
+    DB_URL = normalize_database_url(
+        DATABASE_URL or (
+            f"postgresql+asyncpg://"
+            f"{os.getenv('DB_USER')}:"
+            f"{os.getenv('DB_PASSWORD')}@"
+            f"{os.getenv('DB_HOST')}:"
+            f"{os.getenv('DB_PORT')}/"
+            f"{os.getenv('DB_NAME')}"
+        )
     )

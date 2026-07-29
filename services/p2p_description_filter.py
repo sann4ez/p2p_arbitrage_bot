@@ -304,19 +304,24 @@ async def filter_orders_by_description_until(
         return orders[:limit]
 
     selected_orders = []
-    batch_size = get_description_filter_batch_size(limit)
+    initial_batch_size = get_description_filter_batch_size(limit)
 
     logger.debug(
         "P2P description filter progressive start: exchange=%s input=%s limit=%s batch_size=%s allow_missing_descriptions=%s",
         exchange,
         len(orders),
         limit,
-        batch_size,
+        initial_batch_size,
         allow_missing_descriptions,
     )
 
-    for start in range(0, len(orders), batch_size):
+    start = 0
+
+    while start < len(orders):
+        remaining = limit - len(selected_orders)
+        batch_size = get_description_filter_batch_size(remaining)
         batch = orders[start:start + batch_size]
+        start += len(batch)
         await prepare_batch(batch)
         filtered_batch = await filter_orders_by_description(
             batch,
@@ -329,7 +334,7 @@ async def filter_orders_by_description_until(
         logger.debug(
             "P2P description filter progressive step: exchange=%s checked=%s/%s batch_input=%s batch_output=%s selected=%s/%s",
             exchange,
-            min(start + len(batch), len(orders)),
+            start,
             len(orders),
             len(batch),
             len(filtered_batch),
@@ -346,7 +351,7 @@ async def filter_orders_by_description_until(
 def get_description_filter_batch_size(limit: int) -> int:
     return min(
         MAX_DESCRIPTION_FILTER_BATCH_SIZE,
-        max(MIN_DESCRIPTION_FILTER_BATCH_SIZE, limit * 2),
+        max(MIN_DESCRIPTION_FILTER_BATCH_SIZE, limit),
     )
 
 

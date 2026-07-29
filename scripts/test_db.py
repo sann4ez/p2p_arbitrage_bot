@@ -6,9 +6,15 @@ if sys.platform.startswith("win"):
 
 from db.base import engine
 
-async def test():
-    async with engine.begin() as conn:
-        await conn.run_sync(lambda _: None)
-    print("DB connected successfully")
 
-asyncio.run(test())
+async def test():
+    try:
+        async with engine.begin() as conn:
+            await conn.run_sync(lambda _: None)
+        print("DB connected successfully")
+    finally:
+        await engine.dispose()
+
+
+if __name__ == "__main__":
+    asyncio.run(test())
