@@ -3,6 +3,8 @@ import logging
 
 import aiohttp
 
+from config import Config
+
 logger = logging.getLogger(__name__)
 
 BINANCE_P2P_URL = "https://p2p.binance.com/bapi/c2c/v2/friendly/c2c/adv/search"
@@ -157,11 +159,19 @@ async def fetch_binance_p2p_details(adv_nos: list[object]) -> dict[str, dict]:
         return {}
 
     timeout = aiohttp.ClientTimeout(total=15)
+    semaphore = asyncio.Semaphore(Config.P2P_DETAIL_FETCH_CONCURRENCY)
 
     try:
         async with aiohttp.ClientSession(headers=BINANCE_HEADERS, timeout=timeout) as session:
             results = await asyncio.gather(
-                *(_fetch_binance_p2p_detail(session, adv_no) for adv_no in unique_adv_nos),
+                *(
+                    _fetch_binance_p2p_detail_limited(
+                        session,
+                        semaphore,
+                        adv_no,
+                    )
+                    for adv_no in unique_adv_nos
+                ),
                 return_exceptions=True,
             )
     except (aiohttp.ClientError, asyncio.TimeoutError):
@@ -179,6 +189,15 @@ async def fetch_binance_p2p_details(adv_nos: list[object]) -> dict[str, dict]:
             details[adv_no] = detail
 
     return details
+
+
+async def _fetch_binance_p2p_detail_limited(
+    session: aiohttp.ClientSession,
+    semaphore: asyncio.Semaphore,
+    adv_no: str,
+) -> tuple[str, dict]:
+    async with semaphore:
+        return await _fetch_binance_p2p_detail(session, adv_no)
 
 
 async def _fetch_binance_p2p_detail(

@@ -12,9 +12,12 @@ class Base(DeclarativeBase):
 
 engine = create_async_engine(
     Config.DB_URL,
-    echo=False,        # True — для дебагу SQL
-    pool_size=10,
-    max_overflow=20,
+    echo=False,
+    pool_size=Config.DB_POOL_SIZE,
+    max_overflow=Config.DB_MAX_OVERFLOW,
+    pool_timeout=Config.DB_POOL_TIMEOUT_SECONDS,
+    pool_recycle=Config.DB_POOL_RECYCLE_SECONDS,
+    pool_use_lifo=True,
 )
 
 AsyncSessionLocal = async_sessionmaker(

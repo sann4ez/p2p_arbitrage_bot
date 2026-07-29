@@ -2,14 +2,15 @@ import hashlib
 import json
 import logging
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import timedelta
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.dialects.postgresql import insert
 
 from config import Config
 from db.base import AsyncSessionLocal
 from db.models import P2POrderDetailCache
+from services.time_utils import utc_now_naive as utc_now
 
 
 logger = logging.getLogger(__name__)
@@ -21,6 +22,39 @@ class PersistedDetailBatch:
     stale: dict[str, dict]
 
 
+async def cleanup_persisted_p2p_details(
+    retention_days: int,
+    *,
+    batch_size: int = 1000,
+) -> int:
+    if retention_days <= 0 or batch_size <= 0:
+        return 0
+
+    cutoff = utc_now() - timedelta(days=retention_days)
+    expired_ids = (
+        select(P2POrderDetailCache.id)
+        .where(P2POrderDetailCache.last_seen_at < cutoff)
+        .order_by(P2POrderDetailCache.last_seen_at)
+        .limit(batch_size)
+    )
+
+    try:
+        async with AsyncSessionLocal() as session:
+            result = await session.execute(
+                delete(P2POrderDetailCache).where(
+                    P2POrderDetailCache.id.in_(expired_ids)
+                )
+            )
+            await session.commit()
+            return max(0, int(result.rowcount or 0))
+    except Exception as error:
+        logger.warning(
+            "Persistent P2P detail cache cleanup failed: error=%s",
+            type(error).__name__,
+        )
+        return 0
+
+
 async def load_persisted_p2p_details(
     exchange: str,
     item_ids: list[str],
@@ -28,7 +62,7 @@ async def load_persisted_p2p_details(
     if not item_ids or get_persistent_detail_ttl_seconds() <= 0:
         return PersistedDetailBatch(fresh={}, stale={})
 
-    now = datetime.utcnow()
+    now = utc_now()
 
     try:
         async with AsyncSessionLocal() as session:
@@ -71,7 +105,7 @@ async def store_persisted_p2p_details(
     if not prepared or ttl_seconds <= 0:
         return
 
-    now = datetime.utcnow()
+    now = utc_now()
     next_refresh_at = now + timedelta(seconds=ttl_seconds)
     values = [
         {
@@ -123,7 +157,7 @@ async def defer_persisted_p2p_detail_refresh(
     if not item_ids or retry_seconds <= 0:
         return
 
-    now = datetime.utcnow()
+    now = utc_now()
     retry_at = now + timedelta(seconds=retry_seconds)
     empty_payload = {}
     values = [

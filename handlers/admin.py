@@ -1,4 +1,3 @@
-import asyncio
 from html import escape
 
 from aiogram import F, Router, types
@@ -62,7 +61,7 @@ from services.menu_service import admin_menu_for_user, root_menu_for_user
 from services.payment_method_service import PaymentMethodService
 from services.p2p_filters import filters_summary
 from services.statistics_settings_service import StatisticsSettingsService
-from tasks.statistics_scanner import run_global_statistics_scan_once
+from tasks.statistics_scanner import schedule_global_statistics_scan
 
 router = Router()
 
@@ -489,8 +488,12 @@ async def admin_statistics_reset(callback: types.CallbackQuery, state: FSMContex
     PermissionRequired(PERMISSION_RUN_SCANNER),
 )
 async def admin_statistics_run_now(callback: types.CallbackQuery):
-    asyncio.create_task(run_global_statistics_scan_once())
-    await callback.answer("Скан статистики запущено у фоні", show_alert=True)
+    if schedule_global_statistics_scan():
+        message = "Скан статистики запущено у фоні"
+    else:
+        message = "Скан статистики вже виконується"
+
+    await callback.answer(message, show_alert=True)
 
 
 @router.callback_query(

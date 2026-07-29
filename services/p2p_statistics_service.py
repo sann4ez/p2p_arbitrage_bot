@@ -4,7 +4,7 @@ import json
 from datetime import datetime, timedelta
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 
-from sqlalchemy import and_, delete, or_, select
+from sqlalchemy import and_, delete, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.base import AsyncSessionLocal
@@ -29,6 +29,7 @@ from services.p2p_filters import (
 )
 from services.p2p_exchange_drivers import get_p2p_exchange_driver
 from services.p2p_order_formatter import build_binance_order_url, build_okx_order_url
+from services.time_utils import utc_now_naive as utc_now
 
 
 logger = logging.getLogger(__name__)
@@ -68,7 +69,7 @@ async def cleanup_raw_scan_history(retention_hours: int) -> int:
     if retention_hours <= 0:
         return 0
 
-    cutoff = datetime.utcnow() - timedelta(hours=retention_hours)
+    cutoff = utc_now() - timedelta(hours=retention_hours)
     expired_batch_ids = (
         select(ScanBatch.id)
         .where(
@@ -119,7 +120,7 @@ class P2PStatisticsService:
         crypto = await self.ensure_crypto_currency(pair.crypto_currency_id, pair.crypto_code)
         fiat = await self.ensure_fiat_currency(pair.fiat_currency_id, pair.fiat_code)
         normalized_side = normalize_side(side)
-        started_at = datetime.utcnow()
+        started_at = utc_now()
         scan_batch = ScanBatch(
             exchange_id=exchange.id,
             user_id=user_id,
@@ -142,7 +143,7 @@ class P2PStatisticsService:
         )
 
         scan_batch.status = "done"
-        scan_batch.finished_at = datetime.utcnow()
+        scan_batch.finished_at = utc_now()
 
         for period_type in STAT_PERIOD_TYPES:
             period_started_at, period_ended_at = get_period_bounds(
@@ -189,8 +190,8 @@ class P2PStatisticsService:
         raw_side: str,
         orders: list[dict],
     ) -> int:
-        saved_count = 0
         seen_offer_ids = set()
+        prepared_offers: list[tuple[P2POffer, list[str]]] = []
         payment_methods = await self.payment_method_repo.list_by_fiat(fiat.id)
         active_payment_methods = [
             method for method in payment_methods if method.is_active
@@ -216,16 +217,22 @@ class P2PStatisticsService:
                 offer_id=offer_id,
                 price=price,
             )
-            self.session.add(offer)
-            await self.session.flush()
+            prepared_offers.append((offer, payment_names))
+
+        if not prepared_offers:
+            return 0
+
+        self.session.add_all([offer for offer, _ in prepared_offers])
+        await self.session.flush()
+
+        for offer, payment_names in prepared_offers:
             self.attach_offer_payment_methods(
                 offer.id,
                 payment_names,
                 active_payment_methods,
             )
-            saved_count += 1
 
-        return saved_count
+        return len(prepared_offers)
 
     def attach_offer_payment_methods(
         self,
@@ -303,7 +310,16 @@ class P2PStatisticsService:
         period_ended_at: datetime,
     ):
         result = await self.session.execute(
-            select(P2POffer.price, P2POffer.scan_batch_id)
+            select(
+                func.min(P2POffer.price).label("min_price"),
+                func.max(P2POffer.price).label("max_price"),
+                func.avg(P2POffer.price).label("avg_price"),
+                func.percentile_cont(0.5)
+                .within_group(P2POffer.price)
+                .label("median_price"),
+                func.count(P2POffer.id).label("offers_count"),
+                func.count(P2POffer.scan_batch_id.distinct()).label("scans_count"),
+            )
             .join(ScanBatch, ScanBatch.id == P2POffer.scan_batch_id)
             .where(
                 P2POffer.exchange_id == exchange_id,
@@ -316,12 +332,12 @@ class P2PStatisticsService:
                 ScanBatch.started_at < period_ended_at,
             )
         )
-        rows = list(result.all())
+        row = result.one()
 
-        if not rows:
+        if not row.offers_count:
             return
 
-        await self.save_period_statistic(
+        await self.save_calculated_period_statistic(
             exchange_id=exchange_id,
             crypto_currency_id=crypto_currency_id,
             fiat_currency_id=fiat_currency_id,
@@ -331,9 +347,12 @@ class P2PStatisticsService:
             period_type=period_type,
             period_started_at=period_started_at,
             period_ended_at=period_ended_at,
-            prices=sorted(row.price for row in rows),
-            offers_count=len(rows),
-            scans_count=len({row.scan_batch_id for row in rows}),
+            min_price=row.min_price,
+            max_price=row.max_price,
+            avg_price=row.avg_price,
+            median_price=row.median_price,
+            offers_count=int(row.offers_count),
+            scans_count=int(row.scans_count),
         )
 
     async def recalculate_rollup_period(
@@ -414,6 +433,43 @@ class P2PStatisticsService:
         max_price = prices[-1]
         avg_price = sum(prices, Decimal("0")) / Decimal(len(prices))
         median_price = calculate_median(prices)
+        await self.save_calculated_period_statistic(
+            exchange_id=exchange_id,
+            crypto_currency_id=crypto_currency_id,
+            fiat_currency_id=fiat_currency_id,
+            side=side,
+            scope=scope,
+            filter_hash=filter_hash,
+            period_type=period_type,
+            period_started_at=period_started_at,
+            period_ended_at=period_ended_at,
+            min_price=min_price,
+            max_price=max_price,
+            avg_price=avg_price,
+            median_price=median_price,
+            offers_count=offers_count,
+            scans_count=scans_count,
+        )
+
+    async def save_calculated_period_statistic(
+        self,
+        *,
+        exchange_id: int,
+        crypto_currency_id: int,
+        fiat_currency_id: int,
+        side: str,
+        scope: str,
+        filter_hash: str,
+        period_type: str,
+        period_started_at: datetime,
+        period_ended_at: datetime,
+        min_price: Decimal,
+        max_price: Decimal,
+        avg_price: Decimal,
+        median_price: Decimal,
+        offers_count: int,
+        scans_count: int,
+    ):
         statistic = await self.get_statistic(
             exchange_id=exchange_id,
             crypto_currency_id=crypto_currency_id,
@@ -764,9 +820,9 @@ def build_statistics_filter_hash(
         settings=settings,
         payment_methods=payment_methods or [],
     )
-    raw_payload = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    serialized_payload = json.dumps(payload, sort_keys=True, separators=(",", ":"))
 
-    return hashlib.sha256(raw_payload.encode("utf-8")).hexdigest()
+    return hashlib.sha256(serialized_payload.encode("utf-8")).hexdigest()
 
 
 def build_statistics_filter_payload(
@@ -905,7 +961,6 @@ def build_binance_offer_model(
         ),
         payment_time_minutes=parse_int(adv.get("payTimeLimit")),
         order_url=build_binance_order_url(order),
-        raw_payload=order,
     )
 
 
@@ -960,7 +1015,6 @@ def build_okx_offer_model(
             asset=crypto.code,
             fiat=fiat.code,
         ),
-        raw_payload=order,
     )
 
 

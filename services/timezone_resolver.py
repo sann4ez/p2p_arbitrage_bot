@@ -41,4 +41,4 @@ def resolve_timezone_from_coordinates(
 def get_timezone_finder():
     from timezonefinder import TimezoneFinder
 
-    return TimezoneFinder(in_memory=True)
+    return TimezoneFinder(in_memory=False)

@@ -1,10 +1,10 @@
 import asyncio
 import copy
-import hashlib
 import logging
 import math
 import time
 from collections.abc import Awaitable, Callable
+from contextlib import AsyncExitStack
 from dataclasses import dataclass
 
 from config import Config
@@ -111,90 +111,118 @@ async def get_cached_p2p_details(
     if not unique_item_ids:
         return {}
 
-    now = time.monotonic()
     ttl_seconds = get_details_cache_ttl_seconds()
+    details, missing_item_ids = await load_memory_cached_details(
+        exchange,
+        unique_item_ids,
+    )
+
+    async with AsyncExitStack() as lock_stack:
+        for item_id in sorted(missing_item_ids):
+            lock = await get_cache_lock(get_detail_cache_key(exchange, item_id))
+            await lock_stack.enter_async_context(lock)
+
+        # Another overlapping request may have populated the cache while these
+        # per-order locks were being acquired.
+        locked_cached, missing_item_ids = await load_memory_cached_details(
+            exchange,
+            missing_item_ids,
+        )
+        details.update(locked_cached)
+
+        if not missing_item_ids:
+            return details
+
+        persisted = await load_persisted_p2p_details(exchange, missing_item_ids)
+        details.update(copy.deepcopy(persisted.fresh))
+        await store_memory_cached_details(
+            exchange,
+            persisted.fresh,
+            ttl_seconds,
+        )
+        missing_item_ids = [
+            item_id
+            for item_id in missing_item_ids
+            if item_id not in persisted.fresh
+        ]
+
+        if not missing_item_ids:
+            return details
+
+        await wait_for_global_cooldown(exchange)
+        fetched = await fetcher(missing_item_ids) or {}
+        fresh_details = {
+            str(item_id): detail
+            for item_id, detail in fetched.items()
+            if item_id and isinstance(detail, dict) and detail
+        }
+        await store_persisted_p2p_details(exchange, fresh_details)
+        fetched_ids = set(fresh_details)
+        not_fetched_ids = [
+            item_id
+            for item_id in missing_item_ids
+            if item_id not in fetched_ids
+        ]
+        await defer_persisted_p2p_detail_refresh(
+            exchange,
+            not_fetched_ids,
+        )
+
+        resolved_details = {
+            item_id: (
+                fresh_details.get(item_id)
+                or persisted.stale.get(item_id)
+                or {}
+            )
+            for item_id in missing_item_ids
+        }
+        details.update(copy.deepcopy(resolved_details))
+        await store_memory_cached_details(
+            exchange,
+            resolved_details,
+            ttl_seconds,
+        )
+
+    return details
+
+
+async def load_memory_cached_details(
+    exchange: str,
+    item_ids: list[str],
+) -> tuple[dict[str, dict], list[str]]:
+    now = time.monotonic()
     details = {}
     missing_item_ids = []
 
     async with _guard_lock:
-        for item_id in unique_item_ids:
-            cache_key = get_detail_cache_key(exchange, item_id)
-            cached = _cache.get(cache_key)
+        for item_id in item_ids:
+            cached = _cache.get(get_detail_cache_key(exchange, item_id))
 
             if cached and cached.expires_at > now:
                 details[item_id] = copy.deepcopy(cached.value)
             else:
                 missing_item_ids.append(item_id)
 
-    if not missing_item_ids:
-        return details
+    return details, missing_item_ids
 
-    persisted = await load_persisted_p2p_details(exchange, missing_item_ids)
 
-    for item_id, detail in persisted.fresh.items():
-        details[item_id] = copy.deepcopy(detail)
+async def store_memory_cached_details(
+    exchange: str,
+    details: dict[str, dict],
+    ttl_seconds: float,
+):
+    if not details or ttl_seconds <= 0:
+        return
 
-    if persisted.fresh:
-        async with _guard_lock:
-            for item_id, detail in persisted.fresh.items():
-                _cache[get_detail_cache_key(exchange, item_id)] = CacheEntry(
-                    value=copy.deepcopy(detail),
-                    expires_at=now + ttl_seconds,
-                )
-            prune_cache_size_locked()
-
-    missing_item_ids = [
-        item_id
-        for item_id in missing_item_ids
-        if item_id not in persisted.fresh
-    ]
-
-    if not missing_item_ids:
-        return details
-
-    fresh_details = await get_or_fetch_cache(
-        cache_key=get_detail_batch_cache_key(exchange, missing_item_ids),
-        exchange=exchange,
-        ttl_seconds=ttl_seconds,
-        fetcher=lambda: fetcher(missing_item_ids),
-        cache_empty=False,
-        store_value=False,
-    ) or {}
-    await store_persisted_p2p_details(exchange, fresh_details)
-    fetched_ids = {
-        str(item_id)
-        for item_id, detail in fresh_details.items()
-        if item_id and isinstance(detail, dict) and detail
-    }
-    await defer_persisted_p2p_detail_refresh(
-        exchange,
-        [
-            item_id
-            for item_id in missing_item_ids
-            if item_id not in fetched_ids
-        ],
-    )
-
-    now = time.monotonic()
+    expires_at = time.monotonic() + ttl_seconds
 
     async with _guard_lock:
-        for item_id in missing_item_ids:
-            detail = (
-                fresh_details.get(item_id)
-                or fresh_details.get(str(item_id))
-                or persisted.stale.get(str(item_id))
-                or {}
+        for item_id, detail in details.items():
+            _cache[get_detail_cache_key(exchange, item_id)] = CacheEntry(
+                value=copy.deepcopy(detail),
+                expires_at=expires_at,
             )
-            details[str(item_id)] = copy.deepcopy(detail)
-
-            if detail:
-                _cache[get_detail_cache_key(exchange, item_id)] = CacheEntry(
-                    value=copy.deepcopy(detail),
-                    expires_at=now + ttl_seconds,
-                )
         prune_cache_size_locked()
-
-    return details
 
 
 async def get_or_fetch_cache(
@@ -335,11 +363,6 @@ def normalize_unique_ids(item_ids: list[object]) -> list[str]:
 
 def get_detail_cache_key(exchange: str, item_id: object) -> str:
     return f"p2p-detail:{exchange}:{item_id}"
-
-
-def get_detail_batch_cache_key(exchange: str, item_ids: list[str]) -> str:
-    digest = hashlib.sha256(",".join(item_ids).encode("utf-8")).hexdigest()
-    return f"p2p-detail-batch:{exchange}:{digest}"
 
 
 def cleanup_cache_state_locked(now: float | None = None):

@@ -5,10 +5,12 @@ from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 
 from config import Config
+from db.base import engine
 from db.bootstrap import bootstrap_database
 from handlers import register_routes
 from services.admin_notifier import configure_admin_notifier
 from tasks.recommendation_monitor import run_p2p_market_monitor
+from tasks.statistics_scanner import cancel_scheduled_global_statistics_scan
 
 logging.basicConfig(
     level=getattr(logging, Config.LOG_LEVEL, logging.WARNING),
@@ -39,6 +41,8 @@ async def main():
             task.cancel()
 
         await asyncio.gather(*background_tasks, return_exceptions=True)
+        await cancel_scheduled_global_statistics_scan()
+        await engine.dispose()
 
 
 if __name__ == "__main__":

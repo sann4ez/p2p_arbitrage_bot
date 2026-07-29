@@ -1,7 +1,7 @@
 import hashlib
 import logging
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from decimal import Decimal
 
 from sqlalchemy import and_, func, select, tuple_
@@ -39,13 +39,10 @@ from services.p2p_statistics_service import (
     STAT_SCOPE_GLOBAL,
     normalize_side,
 )
+from services.time_utils import utc_now_naive as utc_now
 
 
 logger = logging.getLogger(__name__)
-
-
-def utc_now() -> datetime:
-    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 @dataclass(frozen=True)

@@ -1,5 +1,3 @@
-from datetime import datetime
-
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import Config
@@ -7,6 +5,7 @@ from db.dto import ROLE_SUPER_ADMIN, ROLE_USER
 from repositories.rbac_repository import RbacRepository
 from repositories.user_repository import UserRepository
 from db.models import User
+from services.time_utils import utc_now_naive
 
 
 class UserService:
@@ -58,7 +57,7 @@ class UserService:
         user.location_latitude = location_data.get("latitude")
         user.location_longitude = location_data.get("longitude")
         user.location_timezone = timezone_name
-        user.location_updated_at = datetime.utcnow()
+        user.location_updated_at = utc_now_naive()
 
         await self.session.commit()
 
