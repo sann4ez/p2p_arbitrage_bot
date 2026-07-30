@@ -33,6 +33,8 @@ CANDIDATE_ORDER_COUNT_OPTIONS = [20, 50, 100, 150, 200]
 
 @dataclass
 class P2PFilterSettings:
+    min_order_amount: float | None = None
+    max_order_amount: float | None = None
     max_order_minutes: int | None = None
     min_trades: int | None = None
     min_rating: float | None = None

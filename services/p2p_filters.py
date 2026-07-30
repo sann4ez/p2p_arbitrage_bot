@@ -501,6 +501,16 @@ ADVERTISING_DESCRIPTION_PATTERNS = (
     re.compile(r"(?:набор|набір|recruit|join).{0,80}(?:команд|team)", re.IGNORECASE),
     re.compile(r"(?:доход|дохід|прибыл|прибут|profit|earn).{0,80}(?:без\s+карт|без\s+карты|%|percent|процент)", re.IGNORECASE),
     re.compile(r"(?:для\s+связи|для\s+зв['’]?язку|contact).{0,40}(?:tg|telegram|@)", re.IGNORECASE),
+    re.compile(
+        r"(?:предложен\w*|пропозиц\w*|offer).{0,80}"
+        r"(?:сотруднич\w*|співпрац\w*|cooperat\w*|collaborat\w*)",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"(?:отпиш\w*|напиш\w*|пишит\w*|звертай\w*|contact).{0,60}"
+        r"(?:тлгрм|телеграм\w*|telegram|tg\b|@\w+)",
+        re.IGNORECASE,
+    ),
 )
 
 DESCRIPTION_PAYMENT_TIME_PATTERNS = (
@@ -909,6 +919,8 @@ async def get_user_settings(session: AsyncSession, telegram_id: int) -> UserSett
 
 def settings_from_model(user_settings: UserSettings) -> P2PFilterSettings:
     return P2PFilterSettings(
+        min_order_amount=to_float(getattr(user_settings, "min_order_amount", None)),
+        max_order_amount=to_float(getattr(user_settings, "max_order_amount", None)),
         max_order_minutes=user_settings.max_order_minutes,
         min_trades=user_settings.min_merchant_orders,
         min_rating=to_float(user_settings.min_merchant_rating),
@@ -931,6 +943,12 @@ def apply_settings_to_model(
     user_settings: UserSettings,
     settings: P2PFilterSettings,
 ):
+    if hasattr(user_settings, "min_order_amount"):
+        user_settings.min_order_amount = decimal_or_none(settings.min_order_amount)
+
+    if hasattr(user_settings, "max_order_amount"):
+        user_settings.max_order_amount = decimal_or_none(settings.max_order_amount)
+
     user_settings.max_order_minutes = settings.max_order_minutes
     user_settings.min_merchant_orders = settings.min_trades
     user_settings.min_merchant_rating = decimal_or_none(settings.min_rating)
@@ -1179,6 +1197,11 @@ def get_binance_order_metrics(order: dict) -> dict:
     )
 
     return {
+        "min_amount": parse_number(adv.get("minSingleTransAmount")),
+        "max_amount": parse_number(
+            adv.get("dynamicMaxSingleTransAmount")
+            or adv.get("maxSingleTransAmount")
+        ),
         "minutes": resolve_order_minutes(
             parse_int(adv.get("payTimeLimit")),
             parse_description_payment_minutes(description),
@@ -1201,6 +1224,8 @@ def get_okx_order_metrics(order: dict) -> dict:
     description = normalize_order_description(*get_okx_order_description_values(order))
 
     return {
+        "min_amount": parse_number(order.get("quoteMinAmountPerOrder")),
+        "max_amount": parse_number(order.get("quoteMaxAmountPerOrder")),
         "minutes": resolve_order_minutes(
             parse_int(get_okx_order_payment_timeout(order)),
             parse_description_payment_minutes(description),
@@ -1258,6 +1283,18 @@ def get_order_rejection_reason(
 ) -> str | None:
     if metrics.get("advertising"):
         return "advertising"
+
+    if settings.min_order_amount is not None and not value_gte(
+        metrics["max_amount"],
+        settings.min_order_amount,
+    ):
+        return "min_order_amount"
+
+    if settings.max_order_amount is not None and not value_lte(
+        metrics["min_amount"],
+        settings.max_order_amount,
+    ):
+        return "max_order_amount"
 
     if settings.max_order_minutes is not None and not value_lte(
         metrics["minutes"],
@@ -1579,6 +1616,16 @@ def parse_int(value) -> int | None:
         return None
 
 
+def parse_number(value) -> float | None:
+    if value in (None, ""):
+        return None
+
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def parse_percent(value) -> float | None:
     if value in (None, "", -1, "-1"):
         return None
@@ -1609,11 +1656,37 @@ def filters_summary(settings: P2PFilterSettings) -> str:
         f"Перевіряти кандидатів: {format_candidate_order_count(settings)}",
     ]
 
+    if settings.min_order_amount is not None or settings.max_order_amount is not None:
+        parts.insert(0, f"Сума угоди: {format_order_amount_range(settings)}")
+
     return "\n".join(f"• {part}" for part in parts)
 
 
 def format_max_order_minutes(value: int | None) -> str:
     return "будь-який" if value is None else f"до {value} хв"
+
+
+def format_order_amount_range(settings: P2PFilterSettings) -> str:
+    minimum = format_order_amount(settings.min_order_amount)
+    maximum = format_order_amount(settings.max_order_amount)
+
+    if settings.min_order_amount is None and settings.max_order_amount is None:
+        return "будь-яка"
+
+    if settings.min_order_amount is None:
+        return f"до {maximum}"
+
+    if settings.max_order_amount is None:
+        return f"від {minimum}"
+
+    return f"{minimum} - {maximum}"
+
+
+def format_order_amount(value: float | None) -> str:
+    if value is None:
+        return "без межі"
+
+    return f"{value:,.2f}".replace(",", " ").rstrip("0").rstrip(".")
 
 
 def format_min_number(value: int | None) -> str:

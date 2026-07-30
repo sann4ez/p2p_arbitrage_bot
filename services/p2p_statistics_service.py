@@ -833,7 +833,7 @@ def build_statistics_filter_payload(
     settings,
     payment_methods,
 ) -> dict:
-    return {
+    payload = {
         "exchange": str(exchange_code).upper(),
         "asset": str(getattr(pair, "crypto_code", "")).upper(),
         "fiat": str(getattr(pair, "fiat_code", "")).upper(),
@@ -866,6 +866,16 @@ def build_statistics_filter_payload(
             getattr(settings, "allow_monobank_jar_payments", True)
         ),
     }
+    min_order_amount = getattr(settings, "min_order_amount", None)
+    max_order_amount = getattr(settings, "max_order_amount", None)
+
+    if min_order_amount is not None:
+        payload["min_order_amount"] = normalize_hash_float(min_order_amount)
+
+    if max_order_amount is not None:
+        payload["max_order_amount"] = normalize_hash_float(max_order_amount)
+
+    return payload
 
 
 def normalize_hash_float(value) -> float | None:

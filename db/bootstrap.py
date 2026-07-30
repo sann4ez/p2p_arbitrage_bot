@@ -8,6 +8,9 @@ from db.migrations.add_statistics_scope_columns import add_statistics_scope_colu
 from db.migrations.add_user_profile_columns import add_user_profile_columns
 from db.migrations.add_recommendation_columns import add_recommendation_columns
 from db.migrations.add_performance_indexes import add_performance_indexes
+from db.migrations.add_statistics_order_amount_columns import (
+    add_statistics_order_amount_columns,
+)
 from db.seeders.reference_data import seed_reference_data
 from services.payment_method_service import PaymentMethodService
 
@@ -27,6 +30,7 @@ async def bootstrap_database():
 
     await add_p2p_filter_columns()
     await add_statistics_scope_columns()
+    await add_statistics_order_amount_columns()
     await add_user_profile_columns()
     await add_recommendation_columns()
     await add_performance_indexes()

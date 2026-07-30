@@ -81,6 +81,7 @@ CB_ADMIN_STATS_EXCHANGE_TOGGLE_PREFIX = "admstats:exchange:"
 CB_ADMIN_STATS_TOGGLE_PREFIX = "admstats:toggle:"
 CB_ADMIN_STATS_FILTER_PREFIX = "admstats:filter:"
 CB_ADMIN_STATS_SET_PREFIX = "admstats:set:"
+CB_ADMIN_STATS_AMOUNT_PREFIX = "admstats:amount:"
 CB_ADMIN_STATS_PAY_PREFIX = "admstats:pay:"
 CB_ADMIN_STATS_BANK_FIAT_PREFIX = "admstats:bank_fiat:"
 CB_ADMIN_STATS_BANK_TOGGLE_PREFIX = "admstats:bank:"
@@ -112,6 +113,8 @@ CB_STATS_EXCHANGE_PREFIX = "stats:exchange:"
 CB_STATS_DIRECTION_PREFIX = "stats:direction:"
 
 FILTER_SCREEN_ORDER_TIME = "time"
+FILTER_SCREEN_MIN_ORDER_AMOUNT = "min_amount"
+FILTER_SCREEN_MAX_ORDER_AMOUNT = "max_amount"
 FILTER_SCREEN_MIN_TRADES = "trades"
 FILTER_SCREEN_MIN_RATING = "rating"
 FILTER_SCREEN_MIN_COMPLETION = "completion"
@@ -353,6 +356,34 @@ def admin_statistics_inline_kb(settings, filter_settings):
         ],
     ]
     rows.extend(
+        [
+            [
+                InlineKeyboardButton(
+                    text=(
+                        "💵 Сума від: "
+                        f"{format_order_amount_bound(filter_settings.min_order_amount)}"
+                    ),
+                    callback_data=(
+                        f"{CB_ADMIN_STATS_AMOUNT_PREFIX}"
+                        f"{FILTER_SCREEN_MIN_ORDER_AMOUNT}"
+                    ),
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text=(
+                        "💵 Сума до: "
+                        f"{format_order_amount_bound(filter_settings.max_order_amount)}"
+                    ),
+                    callback_data=(
+                        f"{CB_ADMIN_STATS_AMOUNT_PREFIX}"
+                        f"{FILTER_SCREEN_MAX_ORDER_AMOUNT}"
+                    ),
+                ),
+            ],
+        ]
+    )
+    rows.extend(
         p2p_filters_inline_kb(
             filter_settings,
             screen_prefix=CB_ADMIN_STATS_FILTER_PREFIX,
@@ -382,6 +413,25 @@ def admin_statistics_inline_kb(settings, filter_settings):
     )
 
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def admin_statistics_amount_input_inline_kb(field: str):
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="♻️ Без обмеження",
+                    callback_data=f"{CB_ADMIN_STATS_SET_PREFIX}{field}:none",
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    text="⬅️ До статистики",
+                    callback_data=CB_ADMIN_STATS_MENU,
+                ),
+            ],
+        ]
+    )
 
 
 def admin_statistics_exchanges_inline_kb(settings):
@@ -1444,6 +1494,13 @@ def main_menu_kb():
 
 def format_max_order_minutes(value: int | None) -> str:
     return "будь-який" if value is None else f"≤ {value} хв"
+
+
+def format_order_amount_bound(value: float | None) -> str:
+    if value is None:
+        return "без обмеження"
+
+    return f"{value:,.2f}".replace(",", " ").rstrip("0").rstrip(".")
 
 
 def format_min_number(value: int | None) -> str:

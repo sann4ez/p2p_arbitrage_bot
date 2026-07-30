@@ -23,3 +23,4 @@ class AdminMenu(StatesGroup):
     payment_methods = State()
     statistics = State()
     statistics_banks = State()
+    statistics_amount_input = State()
