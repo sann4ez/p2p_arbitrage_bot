@@ -1,3 +1,5 @@
+from decimal import Decimal, InvalidOperation
+
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -258,7 +260,11 @@ class StatisticsSettingsService:
         settings_model = await self.get_or_create_settings()
         settings = settings_from_model(settings_model)
 
-        if field == "time":
+        if field == "min_amount":
+            settings.min_order_amount = parse_optional_amount(raw_value)
+        elif field == "max_amount":
+            settings.max_order_amount = parse_optional_amount(raw_value)
+        elif field == "time":
             settings.max_order_minutes = parse_optional_int(raw_value)
         elif field == "trades":
             settings.min_trades = parse_optional_int(raw_value)
@@ -279,6 +285,7 @@ class StatisticsSettingsService:
         elif field == "mono_jar":
             settings.allow_monobank_jar_payments = raw_value == "1"
 
+        validate_order_amount_range(settings)
         apply_settings_to_model(settings_model, settings)
         await self.session.commit()
 
@@ -308,3 +315,44 @@ def parse_optional_int(value: str) -> int | None:
 
 def parse_optional_float(value: str) -> float | None:
     return None if value == "none" else float(value)
+
+
+def parse_optional_amount(value: str) -> float | None:
+    normalized = (
+        str(value)
+        .strip()
+        .lower()
+        .replace("\u00a0", "")
+        .replace(" ", "")
+        .replace(",", ".")
+    )
+
+    if normalized in {"none", "-", "скинути", "очистити", "безобмеження"}:
+        return None
+
+    try:
+        amount = Decimal(normalized)
+    except InvalidOperation as exc:
+        raise ValueError("Сума має бути числом.") from exc
+
+    if not amount.is_finite() or amount < 0:
+        raise ValueError("Сума має бути невід'ємним числом.")
+
+    if amount > Decimal("999999999999.99"):
+        raise ValueError("Сума завелика.")
+
+    try:
+        rounded_amount = amount.quantize(Decimal("0.01"))
+    except InvalidOperation as exc:
+        raise ValueError("Некоректний формат суми.") from exc
+
+    return float(rounded_amount)
+
+
+def validate_order_amount_range(settings: P2PFilterSettings):
+    if (
+        settings.min_order_amount is not None
+        and settings.max_order_amount is not None
+        and settings.min_order_amount > settings.max_order_amount
+    ):
+        raise ValueError("Мінімальна сума не може бути більшою за максимальну.")

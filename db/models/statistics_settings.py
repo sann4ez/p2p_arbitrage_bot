@@ -18,6 +18,8 @@ class GlobalStatisticsSettings(Base):
     scan_buy: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")
     scan_sell: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")
 
+    min_order_amount: Mapped[Decimal | None] = mapped_column(Numeric(14, 2), nullable=True)
+    max_order_amount: Mapped[Decimal | None] = mapped_column(Numeric(14, 2), nullable=True)
     max_order_minutes: Mapped[int | None] = mapped_column(Integer, nullable=True)
     min_merchant_orders: Mapped[int | None] = mapped_column(Integer, nullable=True)
     min_merchant_rating: Mapped[Decimal | None] = mapped_column(Numeric(5, 2), nullable=True)

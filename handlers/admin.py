@@ -29,6 +29,7 @@ from keyboards.menu import (
     BTN_BACK,
     BTN_LIST_CURRENCIES,
     BTN_STATISTICS,
+    CB_ADMIN_STATS_AMOUNT_PREFIX,
     CB_ADMIN_STATS_BANK_FIAT_PREFIX,
     CB_ADMIN_STATS_BANK_TOGGLE_PREFIX,
     CB_ADMIN_STATS_BANKS_MENU,
@@ -46,6 +47,7 @@ from keyboards.menu import (
     CB_ADMIN_PAYMENT_ADD_PREFIX,
     CB_ADMIN_PAYMENT_FIAT_PREFIX,
     CB_ADMIN_PAYMENT_FIATS_MENU,
+    admin_statistics_amount_input_inline_kb,
     admin_statistics_bank_fiats_inline_kb,
     admin_statistics_bank_methods_inline_kb,
     admin_statistics_exchanges_inline_kb,
@@ -126,7 +128,11 @@ async def payment_methods_back_to_admin(message: types.Message, state: FSMContex
 
 
 @router.message(
-    StateFilter(AdminMenu.statistics, AdminMenu.statistics_banks),
+    StateFilter(
+        AdminMenu.statistics,
+        AdminMenu.statistics_banks,
+        AdminMenu.statistics_amount_input,
+    ),
     F.text == BTN_BACK,
 )
 async def statistics_back_to_admin(message: types.Message, state: FSMContext):
@@ -423,6 +429,73 @@ async def admin_statistics_filter(callback: types.CallbackQuery, state: FSMConte
 
 
 @router.callback_query(
+    F.data.startswith(CB_ADMIN_STATS_AMOUNT_PREFIX),
+    PermissionRequired(PERMISSION_RUN_SCANNER),
+)
+async def admin_statistics_amount_input(
+    callback: types.CallbackQuery,
+    state: FSMContext,
+):
+    field = callback.data[len(CB_ADMIN_STATS_AMOUNT_PREFIX):]
+
+    if field not in {"min_amount", "max_amount"}:
+        await callback.answer("Не вдалося прочитати межу суми.", show_alert=True)
+        return
+
+    await state.set_state(AdminMenu.statistics_amount_input)
+    await state.update_data(statistics_amount_field=field)
+    await callback.answer()
+
+    if callback.message:
+        title = (
+            "Мінімальна сума угоди"
+            if field == "min_amount"
+            else "Максимальна сума угоди"
+        )
+        await callback.message.edit_text(
+            f"<b>{title}</b>\n\n"
+            "Надішліть суму у фіатній валюті пари.\n"
+            "Наприклад: <code>100000</code> або <code>100000,50</code>.\n\n"
+            "Ордер пройде, якщо його доступний діапазон сум перетинається "
+            "з налаштованим діапазоном.",
+            reply_markup=admin_statistics_amount_input_inline_kb(field),
+        )
+
+
+@router.message(
+    StateFilter(AdminMenu.statistics_amount_input),
+    PermissionRequired(PERMISSION_RUN_SCANNER),
+)
+async def admin_statistics_amount_value(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    field = data.get("statistics_amount_field")
+
+    if field not in {"min_amount", "max_amount"}:
+        await state.clear()
+        await state.set_state(AdminMenu.statistics)
+        await message.answer("Стан налаштування втрачено. Відкрийте фільтр ще раз.")
+        return
+
+    try:
+        async with AsyncSessionLocal() as session:
+            await StatisticsSettingsService(session).set_filter_value(
+                field,
+                message.text or "",
+            )
+    except ValueError as exc:
+        await message.answer(
+            f"{escape(str(exc))}\n\n"
+            "Вкажіть число, наприклад <code>100000</code>, "
+            "або натисніть «Без обмеження»."
+        )
+        return
+
+    await state.clear()
+    await state.set_state(AdminMenu.statistics)
+    await send_admin_statistics_menu(message)
+
+
+@router.callback_query(
     F.data.startswith(CB_ADMIN_STATS_SET_PREFIX),
     PermissionRequired(PERMISSION_RUN_SCANNER),
 )
@@ -433,8 +506,12 @@ async def admin_statistics_set_filter(callback: types.CallbackQuery, state: FSMC
         await callback.answer("Не вдалося прочитати значення.", show_alert=True)
         return
 
-    async with AsyncSessionLocal() as session:
-        await StatisticsSettingsService(session).set_filter_value(field, raw_value)
+    try:
+        async with AsyncSessionLocal() as session:
+            await StatisticsSettingsService(session).set_filter_value(field, raw_value)
+    except ValueError as exc:
+        await callback.answer(str(exc), show_alert=True)
+        return
 
     await state.set_state(AdminMenu.statistics)
     await callback.answer("Збережено")
@@ -734,6 +811,8 @@ def build_admin_statistics_text(
 
 def build_admin_statistics_filter_screen_text(screen: str) -> str:
     titles = {
+        "min_amount": "Мінімальна сума угоди",
+        "max_amount": "Максимальна сума угоди",
         "time": "Час угоди",
         "trades": "Кількість угод",
         "rating": "Оцінка мерчанта",
