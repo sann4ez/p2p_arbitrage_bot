@@ -1793,6 +1793,7 @@ async def load_statistics_for_user(
             sides=sides,
             period_started_from=period_started_from,
             period_started_to=period_started_to,
+            include_previous_filter_hashes=scope == STAT_SCOPE_GLOBAL,
         )
 
     return stats

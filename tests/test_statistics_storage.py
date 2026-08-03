@@ -8,6 +8,7 @@ from services.p2p_statistics_service import (
     P2PStatisticsService,
     build_binance_offer_model,
     build_okx_offer_model,
+    select_preferred_history_rows,
 )
 
 
@@ -39,6 +40,49 @@ class FakeStatisticsSession:
 
 
 class StatisticsStorageTests(unittest.IsolatedAsyncioTestCase):
+    def test_history_prefers_current_filter_and_fills_old_periods(self):
+        exchange, crypto, fiat = build_reference_models("BINANCE")
+        first_hour = datetime(2026, 6, 1, 10)
+        second_hour = datetime(2026, 6, 1, 11)
+
+        def statistic(identifier, filter_hash, period, updated_at):
+            return SimpleNamespace(
+                id=identifier,
+                filter_hash=filter_hash,
+                side="SELL",
+                period_started_at=period,
+                created_at=updated_at,
+                updated_at=updated_at,
+            )
+
+        rows = [
+            (
+                statistic(1, "old", first_hour, datetime(2026, 6, 1, 10, 5)),
+                exchange,
+                crypto,
+                fiat,
+            ),
+            (
+                statistic(2, "current", first_hour, datetime(2026, 6, 1, 10, 1)),
+                exchange,
+                crypto,
+                fiat,
+            ),
+            (
+                statistic(3, "old", second_hour, datetime(2026, 6, 1, 11, 5)),
+                exchange,
+                crypto,
+                fiat,
+            ),
+        ]
+
+        selected = select_preferred_history_rows(
+            rows,
+            current_filter_hashes=["current"],
+        )
+
+        self.assertEqual([row[0].id for row in selected], [2, 3])
+
     async def test_hour_statistic_is_aggregated_by_postgresql(self):
         result = SimpleNamespace(
             one=lambda: SimpleNamespace(
