@@ -4,7 +4,7 @@ import json
 from datetime import datetime, timedelta
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 
-from sqlalchemy import and_, delete, func, or_, select
+from sqlalchemy import and_, case, delete, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.base import AsyncSessionLocal
@@ -612,6 +612,7 @@ class P2PStatisticsService:
         sides: list[str] | None = None,
         period_started_from: datetime | None = None,
         period_started_to: datetime | None = None,
+        include_previous_filter_hashes: bool = False,
     ) -> list[P2PPriceStatisticView]:
         if filter_hashes is not None and not filter_hashes:
             return []
@@ -631,7 +632,7 @@ class P2PStatisticsService:
         if pair_conditions:
             conditions.append(or_(*pair_conditions))
 
-        if filter_hashes:
+        if filter_hashes and not include_previous_filter_hashes:
             conditions.append(P2PPriceStatistic.filter_hash.in_(filter_hashes))
 
         if exchange_codes:
@@ -650,8 +651,46 @@ class P2PStatisticsService:
         if period_started_to is not None:
             conditions.append(P2PPriceStatistic.period_started_at < period_started_to)
 
+        query = select(P2PPriceStatistic, Exchange, CryptoCurrency, FiatCurrency)
+
+        if include_previous_filter_hashes:
+            current_hash_priority = case(
+                (P2PPriceStatistic.filter_hash.in_(filter_hashes or []), 0),
+                else_=1,
+            )
+            history_rank = func.row_number().over(
+                partition_by=(
+                    P2PPriceStatistic.exchange_id,
+                    P2PPriceStatistic.crypto_currency_id,
+                    P2PPriceStatistic.fiat_currency_id,
+                    P2PPriceStatistic.side,
+                    P2PPriceStatistic.period_started_at,
+                ),
+                order_by=(
+                    current_hash_priority,
+                    P2PPriceStatistic.updated_at.desc(),
+                    P2PPriceStatistic.id.desc(),
+                ),
+            ).label("history_rank")
+            ranked_history = (
+                select(
+                    P2PPriceStatistic.id.label("statistic_id"),
+                    history_rank,
+                )
+                .join(Exchange, Exchange.id == P2PPriceStatistic.exchange_id)
+                .where(*conditions)
+                .subquery()
+            )
+            query = query.join(
+                ranked_history,
+                and_(
+                    ranked_history.c.statistic_id == P2PPriceStatistic.id,
+                    ranked_history.c.history_rank == 1,
+                ),
+            )
+
         result = await self.session.execute(
-            select(P2PPriceStatistic, Exchange, CryptoCurrency, FiatCurrency)
+            query
             .join(Exchange, Exchange.id == P2PPriceStatistic.exchange_id)
             .join(
                 CryptoCurrency,
@@ -662,7 +701,10 @@ class P2PStatisticsService:
             .order_by(P2PPriceStatistic.period_started_at.desc())
             .limit(max(max_periods * max_series * 4, 100))
         )
-        rows = result.all()
+        rows = select_preferred_history_rows(
+            result.all(),
+            current_filter_hashes=filter_hashes or [],
+        )
         views = [
             build_statistic_view(statistic, exchange, crypto, fiat)
             for statistic, exchange, crypto, fiat in rows
@@ -1070,6 +1112,37 @@ def build_statistic_view(
 
 def get_statistic_series_key(view: P2PPriceStatisticView) -> tuple[str, str, str, str]:
     return (view.exchange_code, view.crypto_code, view.fiat_code, view.side)
+
+
+def select_preferred_history_rows(
+    rows,
+    *,
+    current_filter_hashes: list[str],
+):
+    """Keep one point per period, preferring the currently active filter."""
+    current_hashes = set(current_filter_hashes)
+    selected = {}
+
+    for row in rows:
+        statistic, exchange, crypto, fiat = row
+        key = (
+            exchange.id,
+            crypto.id,
+            fiat.id,
+            statistic.side,
+            statistic.period_started_at,
+        )
+        priority = (
+            statistic.filter_hash in current_hashes,
+            statistic.updated_at or statistic.created_at or datetime.min,
+            statistic.id or 0,
+        )
+        previous = selected.get(key)
+
+        if previous is None or priority > previous[0]:
+            selected[key] = (priority, row)
+
+    return [item[1] for item in selected.values()]
 
 
 def get_period_bounds(value: datetime, period_type: str) -> tuple[datetime, datetime]:
