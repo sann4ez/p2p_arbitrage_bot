@@ -23,7 +23,7 @@ from services.p2p_recommendation_ai import (
     AIRecommendationResult,
     MacroAnalysisResult,
     analyze_fiat_macro_context,
-    can_call_openai,
+    can_call_ai,
     review_market_signal,
 )
 from services.p2p_recommendation_signals import (
@@ -95,7 +95,7 @@ class P2PRecommendationService:
         *,
         pair_ids: set[tuple[int, int]] | None = None,
     ) -> list[RecommendationRecord]:
-        if not can_call_openai():
+        if not can_call_ai():
             return []
 
         markets = await self.load_market_histories(pair_ids=pair_ids)

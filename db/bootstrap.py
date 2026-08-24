@@ -19,26 +19,29 @@ logger = logging.getLogger(__name__)
 
 
 async def bootstrap_database():
-    if not Config.DB_AUTO_CREATE_TABLES:
-        logger.debug("Database bootstrap skipped: DB_AUTO_CREATE_TABLES=false")
+    if not Config.DB_AUTO_CREATE_TABLES and not Config.DB_AUTO_MIGRATE_SCHEMA:
+        logger.debug("Database bootstrap skipped: schema management disabled")
         return
 
     logger.debug("Database bootstrap start")
 
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+    if Config.DB_AUTO_CREATE_TABLES:
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
 
-    await add_p2p_filter_columns()
-    await add_statistics_scope_columns()
-    await add_statistics_order_amount_columns()
-    await add_user_profile_columns()
-    await add_recommendation_columns()
-    await add_performance_indexes()
+    if Config.DB_AUTO_MIGRATE_SCHEMA:
+        await add_p2p_filter_columns()
+        await add_statistics_scope_columns()
+        await add_statistics_order_amount_columns()
+        await add_user_profile_columns()
+        await add_recommendation_columns()
+        await add_performance_indexes()
 
-    if Config.DB_AUTO_SEED_REFERENCE_DATA:
-        await seed_reference_data()
+    if Config.DB_AUTO_CREATE_TABLES:
+        if Config.DB_AUTO_SEED_REFERENCE_DATA:
+            await seed_reference_data()
 
-    async with AsyncSessionLocal() as session:
-        await PaymentMethodService(session).sync_filter_keywords()
+        async with AsyncSessionLocal() as session:
+            await PaymentMethodService(session).sync_filter_keywords()
 
     logger.debug("Database bootstrap done")

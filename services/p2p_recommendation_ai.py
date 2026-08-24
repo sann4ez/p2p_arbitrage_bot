@@ -1,18 +1,26 @@
-import asyncio
 import json
 import logging
 from dataclasses import dataclass
 
-import aiohttp
-
 from config import Config
+from services.ai_router import (
+    AIConfigurationError,
+    AIRequestError,
+    AITextResponse,
+    AI_PROFILE_RECOMMENDATION,
+    AI_PROFILE_WEB,
+    complete_ai_chat,
+    complete_ai_response,
+    decode_json_object,
+    is_ai_configured,
+    response_to_dict,
+)
 from services.admin_notifier import notify_admins
 from services.p2p_recommendation_signals import ACTION_HOLD, MarketSignal
 from services.time_utils import utc_now_naive
 
 
 logger = logging.getLogger(__name__)
-OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses"
 
 
 @dataclass(frozen=True)
@@ -39,12 +47,14 @@ async def analyze_fiat_macro_context(
     fiat_code: str,
     crypto_code: str,
 ) -> MacroAnalysisResult | None:
-    if not can_call_openai() or not Config.P2P_RECOMMENDATION_WEB_SEARCH_ENABLED:
+    if (
+        not can_call_ai()
+        or not is_ai_configured(AI_PROFILE_WEB)
+        or not Config.P2P_RECOMMENDATION_WEB_SEARCH_ENABLED
+    ):
         return None
 
     payload = {
-        "model": Config.OPENAI_RECOMMENDATION_MODEL,
-        "store": False,
         "reasoning": {"effort": normalize_reasoning_effort()},
         "tools": [{"type": "web_search"}],
         "instructions": (
@@ -101,7 +111,12 @@ async def analyze_fiat_macro_context(
             },
         },
     }
-    response = await request_openai(payload, alert_key="recommendation_macro_openai")
+    response = await request_ai(
+        payload,
+        alert_key="recommendation_macro_ai",
+        profile=AI_PROFILE_WEB,
+        use_responses=True,
+    )
 
     if response is None:
         return None
@@ -111,7 +126,7 @@ async def analyze_fiat_macro_context(
     if parsed is None:
         await notify_admins(
             "Помилка AI-рекомендацій",
-            "OpenAI повернув некоректну відповідь під час макроаналізу.",
+            "AI повернув некоректну відповідь під час макроаналізу.",
             key="recommendation_macro_parse_failed",
         )
         return None
@@ -121,8 +136,8 @@ async def analyze_fiat_macro_context(
         confidence=clamp(float(parsed.get("confidence", 0.0))),
         summary=str(parsed.get("summary") or "").strip(),
         factors=tuple(clean_string_list(parsed.get("factors"))),
-        sources=tuple(extract_url_citations(response)),
-        model=Config.OPENAI_RECOMMENDATION_MODEL,
+        sources=tuple(extract_url_citations(response_to_dict(response.raw_response))),
+        model=response.model,
     )
 
 
@@ -134,7 +149,7 @@ async def review_market_signal(
     signal: MarketSignal,
     macro_context: MacroAnalysisResult | None,
 ) -> AIRecommendationResult | None:
-    if not can_call_openai() or signal.action == ACTION_HOLD:
+    if not can_call_ai() or signal.action == ACTION_HOLD:
         return None
 
     allowed_actions = [signal.action, ACTION_HOLD]
@@ -150,8 +165,6 @@ async def review_market_signal(
         }
 
     payload = {
-        "model": Config.OPENAI_RECOMMENDATION_MODEL,
-        "store": False,
         "reasoning": {"effort": normalize_reasoning_effort()},
         "instructions": (
             "You are the verification layer for a deterministic P2P market signal. "
@@ -216,7 +229,12 @@ async def review_market_signal(
             },
         },
     }
-    response = await request_openai(payload, alert_key="recommendation_review_openai")
+    response = await request_ai(
+        payload,
+        alert_key="recommendation_review_ai",
+        profile=AI_PROFILE_RECOMMENDATION,
+        use_responses=False,
+    )
 
     if response is None:
         return None
@@ -226,7 +244,7 @@ async def review_market_signal(
     if parsed is None:
         await notify_admins(
             "Помилка AI-рекомендацій",
-            "OpenAI повернув некоректну відповідь під час перевірки сигналу.",
+            "AI повернув некоректну відповідь під час перевірки сигналу.",
             key="recommendation_review_parse_failed",
         )
         return None
@@ -242,106 +260,125 @@ async def review_market_signal(
         summary=str(parsed.get("summary") or "").strip(),
         reasons=tuple(clean_string_list(parsed.get("reasons"))),
         risks=tuple(clean_string_list(parsed.get("risks"))),
-        model=Config.OPENAI_RECOMMENDATION_MODEL,
+        model=response.model,
     )
 
 
-async def request_openai(payload: dict, *, alert_key: str) -> dict | None:
-    timeout = aiohttp.ClientTimeout(total=max(10.0, Config.OPENAI_RECOMMENDATION_TIMEOUT))
-    headers = {
-        "Authorization": f"Bearer {Config.OPENAI_API_KEY}",
-        "Content-Type": "application/json",
-    }
+async def request_ai(
+    payload: dict,
+    *,
+    alert_key: str,
+    profile: str,
+    use_responses: bool,
+) -> AITextResponse | None:
+    reasoning_effort = (payload.get("reasoning") or {}).get("effort")
 
     try:
-        async with aiohttp.ClientSession(headers=headers, timeout=timeout) as session:
-            async with session.post(OPENAI_RESPONSES_URL, json=payload) as response:
-                if response.status >= 400:
-                    body = await response.text()
-                    logger.warning(
-                        "OpenAI recommendation request failed: status=%s body=%s",
-                        response.status,
-                        body[:300],
-                    )
-                    await notify_admins(
-                        "Помилка AI-рекомендацій",
-                        f"OpenAI повернув HTTP {response.status} під час аналізу ринку.",
-                        key=alert_key,
-                    )
-                    return None
+        if use_responses:
+            return await complete_ai_response(
+                profile=profile,
+                instructions=payload["instructions"],
+                input_data=payload["input"],
+                timeout=max(10.0, Config.P2P_RECOMMENDATION_AI_TIMEOUT),
+                text=payload.get("text"),
+                tools=payload.get("tools"),
+                reasoning_effort=reasoning_effort,
+            )
 
-                return await response.json(content_type=None)
-    except (aiohttp.ClientError, asyncio.TimeoutError, json.JSONDecodeError) as error:
+        text_format = payload["text"]["format"]
+        return await complete_ai_chat(
+            profile=profile,
+            instructions=payload["instructions"],
+            input_text=str(payload["input"]),
+            timeout=max(10.0, Config.P2P_RECOMMENDATION_AI_TIMEOUT),
+            json_schema=text_format["schema"],
+            schema_name=text_format["name"],
+            reasoning_effort=reasoning_effort,
+        )
+    except (AIConfigurationError, AIRequestError) as error:
+        root_error = error.__cause__ or error
         logger.warning(
-            "OpenAI recommendation request failed: error=%s",
-            type(error).__name__,
+            "AI recommendation request failed: profile=%s error=%s",
+            profile,
+            type(root_error).__name__,
         )
         await notify_admins(
             "Помилка AI-рекомендацій",
-            f"Не вдалося виконати аналіз: {type(error).__name__}.",
+            f"Не вдалося виконати аналіз: {type(root_error).__name__}.",
             key=alert_key,
         )
         return None
 
 
-def parse_output_json(response: dict) -> dict | None:
-    text = extract_output_text(response)
-
-    if not text:
-        return None
-
-    try:
-        value = json.loads(text)
-    except json.JSONDecodeError:
-        return None
-
-    return value if isinstance(value, dict) else None
-
-
-def extract_output_text(response: dict) -> str | None:
-    if isinstance(response.get("output_text"), str):
-        return response["output_text"]
-
-    for output_item in response.get("output", []):
-        for content_item in output_item.get("content", []):
-            if isinstance(content_item.get("text"), str):
-                return content_item["text"]
-
-    return None
+def parse_output_json(response: AITextResponse) -> dict | None:
+    return decode_json_object(response.text)
 
 
 def extract_url_citations(response: dict) -> list[dict]:
     sources = []
     seen_urls = set()
 
+    def add_source(value: dict) -> None:
+        url = value.get("url") or value.get("link")
+
+        if not url or url in seen_urls:
+            return
+
+        sources.append(
+            {
+                "title": str(value.get("title") or url),
+                "url": str(url),
+            }
+        )
+        seen_urls.add(url)
+
     for output_item in response.get("output", []):
+        action = output_item.get("action") or {}
+
+        for source in action.get("sources", []):
+            if isinstance(source, dict):
+                add_source(source)
+
         for content_item in output_item.get("content", []):
             for annotation in content_item.get("annotations", []):
                 citation = annotation.get("url_citation", annotation)
-                url = citation.get("url") if isinstance(citation, dict) else None
 
-                if not url or url in seen_urls:
-                    continue
+                if isinstance(citation, dict):
+                    add_source(citation)
 
-                sources.append(
-                    {
-                        "title": str(citation.get("title") or url),
-                        "url": str(url),
-                    }
-                )
-                seen_urls.add(url)
+    search_info_containers = [response]
+
+    for choice in response.get("choices", []):
+        if not isinstance(choice, dict):
+            continue
+
+        search_info_containers.extend(
+            value
+            for value in (choice, choice.get("message"))
+            if isinstance(value, dict)
+        )
+
+    for container in search_info_containers:
+        search_info = container.get("search_info") or {}
+
+        for source in (
+            search_info.get("search_results")
+            or search_info.get("results")
+            or []
+        ):
+            if isinstance(source, dict):
+                add_source(source)
 
     return sources[:8]
 
-
 def normalize_reasoning_effort() -> str:
-    value = str(Config.OPENAI_RECOMMENDATION_REASONING_EFFORT or "high").lower()
+    value = str(Config.P2P_RECOMMENDATION_AI_REASONING_EFFORT or "high").lower()
     allowed = {"none", "low", "medium", "high", "xhigh", "max"}
     return value if value in allowed else "high"
 
 
-def can_call_openai() -> bool:
-    return bool(Config.OPENAI_API_KEY and Config.OPENAI_RECOMMENDATION_MODEL)
+def can_call_ai() -> bool:
+    return is_ai_configured(AI_PROFILE_RECOMMENDATION)
 
 
 def clean_string_list(value) -> list[str]:

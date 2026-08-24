@@ -41,7 +41,7 @@ class MarketMonitorLoopTests(unittest.IsolatedAsyncioTestCase):
                 new=scan_mock,
             ),
             patch(
-                "tasks.recommendation_monitor.can_call_openai",
+                "tasks.recommendation_monitor.can_call_ai",
                 return_value=False,
             ),
             patch(
@@ -79,7 +79,7 @@ class MarketMonitorLoopTests(unittest.IsolatedAsyncioTestCase):
                 new=scan_mock,
             ),
             patch(
-                "tasks.recommendation_monitor.can_call_openai",
+                "tasks.recommendation_monitor.can_call_ai",
                 return_value=True,
             ),
             patch(
@@ -125,7 +125,7 @@ class MarketMonitorLoopTests(unittest.IsolatedAsyncioTestCase):
                 ),
             ),
             patch(
-                "tasks.recommendation_monitor.can_call_openai",
+                "tasks.recommendation_monitor.can_call_ai",
                 return_value=True,
             ),
             patch(
@@ -170,7 +170,7 @@ class MarketMonitorLoopTests(unittest.IsolatedAsyncioTestCase):
                 new=AsyncMock(side_effect=RuntimeError("scan failed")),
             ),
             patch(
-                "tasks.recommendation_monitor.can_call_openai",
+                "tasks.recommendation_monitor.can_call_ai",
                 return_value=False,
             ),
             patch(
@@ -207,7 +207,7 @@ class MarketMonitorLoopTests(unittest.IsolatedAsyncioTestCase):
                 ),
             ),
             patch(
-                "tasks.recommendation_monitor.can_call_openai",
+                "tasks.recommendation_monitor.can_call_ai",
                 return_value=False,
             ),
             patch(
