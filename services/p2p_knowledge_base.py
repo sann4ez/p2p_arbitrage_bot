@@ -1,18 +1,19 @@
-import json
 import logging
 import re
-import time
 from dataclasses import dataclass
 from pathlib import Path
 
-import aiohttp
-
-from config import Config
+from services.ai_router import (
+    AIConfigurationError,
+    AIRequestError,
+    AI_PROFILE_P2P,
+    complete_ai_chat,
+    is_ai_configured,
+)
 
 
 logger = logging.getLogger(__name__)
 
-OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses"
 KNOWLEDGE_BASE_DIR = Path("knowledge_base")
 MAX_QUESTION_CHARS = 800
 MAX_CHUNK_CHARS = 2500
@@ -20,7 +21,7 @@ MAX_CONTEXT_CHARS = 12000
 MAX_CONTEXT_CHUNKS = 6
 MIN_RELEVANCE_SCORE = 2
 RELATIVE_RELEVANCE_THRESHOLD = 0.5
-OPENAI_KNOWLEDGE_TIMEOUT = 60
+AI_KNOWLEDGE_TIMEOUT = 60
 
 STOP_WORDS = {
     "а",
@@ -106,17 +107,17 @@ async def answer_p2p_knowledge_question(question: str) -> KnowledgeAnswer:
             sources=[],
         )
 
-    if not Config.OPENAI_API_KEY:
+    if not is_ai_configured(AI_PROFILE_P2P):
         return KnowledgeAnswer(
-            answer="OPENAI_API_KEY не налаштований, тому я не можу сформувати відповідь.",
+            answer="AI-модель не налаштована, тому я не можу сформувати відповідь.",
             sources=list_sources(selected_chunks),
         )
 
-    answer = await request_openai_answer(normalized_question, selected_chunks)
+    answer = await request_ai_answer(normalized_question, selected_chunks)
 
     if not answer:
         return KnowledgeAnswer(
-            answer="Не вдалося отримати відповідь від OpenAI. Спробуйте ще раз пізніше.",
+            answer="Не вдалося отримати відповідь від AI. Спробуйте ще раз пізніше.",
             sources=list_sources(selected_chunks),
         )
 
@@ -325,48 +326,37 @@ def tokenize(value: str) -> set[str]:
     }
 
 
-async def request_openai_answer(
+async def request_ai_answer(
     question: str,
     chunks: list[KnowledgeChunk],
 ) -> str | None:
-    payload = build_openai_payload(question, chunks)
-    headers = {
-        "Authorization": f"Bearer {Config.OPENAI_API_KEY}",
-        "Content-Type": "application/json",
-    }
-    timeout = aiohttp.ClientTimeout(total=OPENAI_KNOWLEDGE_TIMEOUT)
-    started_at = time.monotonic()
+    payload = build_ai_payload(question, chunks)
 
     try:
-        async with aiohttp.ClientSession(headers=headers, timeout=timeout) as session:
-            async with session.post(OPENAI_RESPONSES_URL, json=payload) as response:
-                if response.status >= 400:
-                    body = await response.text()
-                    logger.warning(
-                        "P2P knowledge OpenAI request failed: status=%s body=%s",
-                        response.status,
-                        safe_snippet(body, 500),
-                    )
-                    return None
-
-                data = await response.json(content_type=None)
-    except (aiohttp.ClientError, TimeoutError):
-        logger.exception("P2P knowledge OpenAI request failed")
+        response = await complete_ai_chat(
+            profile=AI_PROFILE_P2P,
+            instructions=payload["instructions"],
+            input_text=payload["input"][0]["content"],
+            timeout=AI_KNOWLEDGE_TIMEOUT,
+        )
+    except (AIConfigurationError, AIRequestError) as error:
+        root_error = error.__cause__ or error
+        logger.warning(
+            "P2P knowledge AI request failed: error=%s",
+            type(root_error).__name__,
+        )
         return None
 
     logger.debug(
-        "P2P knowledge OpenAI request done: chunks=%s elapsed=%.2fs",
+        "P2P knowledge AI request done: chunks=%s model=%s",
         len(chunks),
-        time.monotonic() - started_at,
+        response.model,
     )
+    return response.text
 
-    return extract_output_text(data)
 
-
-def build_openai_payload(question: str, chunks: list[KnowledgeChunk]) -> dict:
+def build_ai_payload(question: str, chunks: list[KnowledgeChunk]) -> dict:
     return {
-        "model": Config.OPENAI_P2P_MODEL,
-        "store": False,
         "instructions": (
             "Ти асистент Telegram-бота для P2P навчання. "
             "Відповідай українською мовою. Використовуй тільки наданий контекст "
@@ -420,18 +410,6 @@ def build_context(chunks: list[KnowledgeChunk]) -> str:
     return "\n\n---\n\n".join(context_parts)
 
 
-def extract_output_text(data: dict) -> str | None:
-    if isinstance(data.get("output_text"), str):
-        return data["output_text"].strip()
-
-    for output_item in data.get("output", []):
-        for content_item in output_item.get("content", []):
-            if isinstance(content_item.get("text"), str):
-                return content_item["text"].strip()
-
-    return None
-
-
 def list_sources(chunks: list[KnowledgeChunk]) -> list[str]:
     sources = []
 
@@ -440,7 +418,3 @@ def list_sources(chunks: list[KnowledgeChunk]) -> list[str]:
             sources.append(chunk.file_name)
 
     return sources
-
-
-def safe_snippet(value: str, limit: int) -> str:
-    return " ".join(str(value).split())[:limit]

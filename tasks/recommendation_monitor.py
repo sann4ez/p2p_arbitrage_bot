@@ -11,7 +11,7 @@ from services.p2p_recommendation_delivery import (
     deliver_market_recommendations,
     get_enabled_recommendation_pair_ids,
 )
-from services.p2p_recommendation_ai import can_call_openai
+from services.p2p_recommendation_ai import can_call_ai
 from services.p2p_recommendation_service import P2PRecommendationService
 from services.time_utils import utc_now_naive as utc_now
 from tasks.statistics_scanner import run_global_statistics_scan_with_result
@@ -28,20 +28,20 @@ async def run_p2p_market_monitor(bot: Bot):
 
         try:
             pair_ids = await get_enabled_recommendation_pair_ids()
-            openai_available = can_call_openai()
+            ai_available = can_call_ai()
             recommendation_pair_ids = (
-                pair_ids if pair_ids and openai_available else set()
+                pair_ids if pair_ids and ai_available else set()
             )
 
-            if pair_ids and not openai_available:
+            if pair_ids and not ai_available:
                 await notify_admins(
                     "AI-рекомендації не запущено",
                     (
                         "Для монітора P2P-рекомендацій не задано "
-                        "OPENAI_API_KEY або OPENAI_RECOMMENDATION_MODEL.\n"
+                        "LITELLM_RECOMMENDATION_MODELS або ключ AI-провайдера.\n"
                         f"Наступна спроба через {format_minutes(next_interval)} хв."
                     ),
-                    key="p2p_recommendation_openai_not_configured",
+                    key="p2p_recommendation_ai_not_configured",
                     cooldown_seconds=0,
                 )
 
