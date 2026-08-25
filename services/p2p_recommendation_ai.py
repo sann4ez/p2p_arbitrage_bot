@@ -318,6 +318,12 @@ def extract_url_citations(response: dict) -> list[dict]:
     sources = []
     seen_urls = set()
 
+    def dict_items(value):
+        if not isinstance(value, (list, tuple)):
+            return ()
+
+        return (item for item in value if isinstance(item, dict))
+
     def add_source(value: dict) -> None:
         url = value.get("url") or value.get("link")
 
@@ -332,15 +338,14 @@ def extract_url_citations(response: dict) -> list[dict]:
         )
         seen_urls.add(url)
 
-    for output_item in response.get("output", []):
+    for output_item in dict_items(response.get("output")):
         action = output_item.get("action") or {}
 
-        for source in action.get("sources", []):
-            if isinstance(source, dict):
-                add_source(source)
+        for source in dict_items(action.get("sources")):
+            add_source(source)
 
-        for content_item in output_item.get("content", []):
-            for annotation in content_item.get("annotations", []):
+        for content_item in dict_items(output_item.get("content")):
+            for annotation in dict_items(content_item.get("annotations")):
                 citation = annotation.get("url_citation", annotation)
 
                 if isinstance(citation, dict):
@@ -348,10 +353,7 @@ def extract_url_citations(response: dict) -> list[dict]:
 
     search_info_containers = [response]
 
-    for choice in response.get("choices", []):
-        if not isinstance(choice, dict):
-            continue
-
+    for choice in dict_items(response.get("choices")):
         search_info_containers.extend(
             value
             for value in (choice, choice.get("message"))
